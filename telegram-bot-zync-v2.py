@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-A2K Digital Studio - Asistente de Ventas por Telegram v4.0
-Bot profesional para la venta de sistemas POS y aplicaciones de gestión.
-Diseñado con un enfoque conversacional humano y estilo venezolano.
+A2K Digital Studio - Asistente de Ventas por Telegram v5.0
+Bot experto en marketing conversacional que vende a través de charla humana.
+Estilo venezolano, persuasivo, con flujo de venta profesional tipo WhatsApp.
 
-Mejoras v4.0:
+Mejoras v5.0:
+- Flujo conversacional tipo WhatsApp (Abi - experto en marketing)
+- State machine avanzado por usuario
+- 3 pitches de venta por cada app (27 totales)
+- Manejo de objeciones con 5 categorías
+- Cierres de venta persuasivos
+- Tienda online integrada en TODA la conversación
+- Detección de hora del día para saludos
+- Detección de usuarios recurrentes
 - Seguimiento de ventas/leads en ventas_telegram.txt
-- Motor de recomendación de negocios
-- Detección de intenciones mejorada (sin conflictos)
 - Follow-ups de venta automáticos
-- Enlaces específicos de BODEGA PRO (demo + licencia)
-- Más variaciones de respuesta
-- Bienvenida personalizada
-- Seguimiento de contexto conversacional
+- Enlaces BODEGA PRO (demo + licencia)
 """
 
 import telebot
@@ -22,6 +25,7 @@ import time
 import random
 import logging
 import threading
+import urllib.parse
 from datetime import datetime
 
 # ==================== CONFIGURACIÓN ====================
@@ -36,52 +40,84 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# URL de la tienda
+# URLs
 STORE_URL = 'https://tiendadigitalaipro.github.io/a2k-digital-studio/'
 WHATSAPP_CONTACT = '584164117331'
-
-# BODEGA PRO enlaces específicos
 BODEGA_PRO_DEMO_URL = 'https://tiendadigitalaipro.github.io/bodega-demo/formulario-demo-bodega.html'
 BODEGA_PRO_LICENCIA_URL = 'https://tiendadigitalaipro.github.io/bodega-demo/formulario-licencia-pro-bodega.html'
-
-# Archivo de seguimiento de ventas
 VENTAS_FILE = 'ventas_telegram.txt'
 
-# ==================== ESTADOS DE CONVERSACIÓN ====================
+# ==================== STATE MACHINE ====================
 
 user_states = {}
-
-# Seguimiento de interacciones por usuario
 user_interaction_counts = {}
+user_last_responses = {}
 
 def get_state(user_id):
-    return user_states.get(user_id, {'flow': 'menu', 'data': None})
+    return user_states.get(user_id, {
+        'flow': 'nuevo',
+        'app_interes': None,
+        'negocio': None,
+        'interacciones': 0,
+        'retorno': False,
+        'ultima_objecion': None,
+        'pitch_visto': {}
+    })
 
-def set_state(user_id, flow, data=None):
-    user_states[user_id] = {'flow': flow, 'data': data}
+def set_state(user_id, flow, **kwargs):
+    state = get_state(user_id)
+    state['flow'] = flow
+    for key, val in kwargs.items():
+        if key in state:
+            state[key] = val
+    user_states[user_id] = state
 
 def track_interaction(user_id):
-    """Registra una interacción del usuario y retorna el conteo."""
     user_interaction_counts[user_id] = user_interaction_counts.get(user_id, 0) + 1
     return user_interaction_counts[user_id]
 
 def get_interaction_count(user_id):
     return user_interaction_counts.get(user_id, 0)
 
+def is_returning_user(user_id):
+    return user_interaction_counts.get(user_id, 0) > 1
+
+def mark_pitch_seen(user_id, app_id):
+    state = get_state(user_id)
+    if 'pitch_visto' not in state:
+        state['pitch_visto'] = {}
+    state['pitch_visto'][app_id] = state['pitch_visto'].get(app_id, 0) + 1
+    user_states[user_id] = state
+
+def get_pitch_count(user_id, app_id):
+    state = get_state(user_id)
+    return state.get('pitch_visto', {}).get(app_id, 0)
+
+def get_time_greeting():
+    """Retorna saludo según la hora del día."""
+    hour = datetime.now().hour
+    if 6 <= hour < 12:
+        return 'buenos_dia'
+    elif 12 <= hour < 18:
+        return 'buenas_tardes'
+    elif 18 <= hour < 22:
+        return 'buenas_noches'
+    else:
+        return 'buenas_noches'
+
 # ==================== SEGUIMIENTO DE VENTAS ====================
 
-def log_venta_lead(username, user_id, app_interes, mensaje):
-    """Guarda un lead/venta potencial en el archivo de seguimiento."""
+def log_venta_lead(username, user_id, app_interes, mensaje, fase='descubrimiento'):
     try:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         line = (
             f"[{timestamp}] | User: @{username or 'sin_username'} | "
             f"ID: {user_id} | App: {app_interes or 'general'} | "
-            f"Mensaje: {mensaje}\n"
+            f"Fase: {fase} | Mensaje: {mensaje}\n"
         )
         with open(VENTAS_FILE, 'a', encoding='utf-8') as f:
             f.write(line)
-        logger.info(f"LEAD registrado - @{username}: {app_interes} - {mensaje}")
+        logger.info(f"LEAD - @{username}: {app_interes} [{fase}] - {mensaje}")
     except Exception as e:
         logger.error(f"Error guardando lead: {e}")
 
@@ -362,249 +398,1105 @@ BANCOS_INT = [
     {'n': 'Barking Circles', 'iban': 'LU194080000056238058', 'bic': 'BICIRLULL'}
 ]
 
-# ==================== VARIACIONES DE RESPUESTA (AMPLIADAS v4.0) ====================
+# ==================== PHASE 1: GREETING & DISCOVERY ====================
 
-GREETINGS_VARIATIONS = [
-    "¡Hola! ¿Cómo estás? 😊 Me alegra que me escribas. Soy el asistente de A2K Digital Studio y estoy aquí para ayudarte con lo que necesites.",
-    "¡Buenas! ¿Qué tal? 👋 Qué gusto saludarte. Te cuento, en A2K Digital Studio tenemos las mejores aplicaciones para tu negocio.",
-    "¡Hey! ¿Cómo va todo? 😄 Bienvenido a A2K Digital Studio. Dime, ¿en qué te puedo ayudar hoy?",
-    "¡Saludos! ¿Cómo te va? 🙌 Me da gusto tenerte por acá. Soy tu asistente virtual de A2K Digital Studio.",
-    "¡Qué bueno verte por aquí! 👋 Soy el asistente de A2K Digital Studio. ¿Qué necesitas saber?",
-    "¡Buen día! 😃 Me alegra mucho saludarte. Estoy aquí para ayudarte a encontrar el sistema perfecto para tu negocio.",
-    "¡Qué milagro verte! 😊 No, broma, siempre es un gusto atenderte. ¿Qué te cuento hoy?",
-    "¡Bienvenido/a! 🎉 Soy el bot de A2K Digital Studio. ¿Tienes un negocio? Te tengo la solución ideal.",
-    "¡Epa! ¿Cómo estás? 🤙 Me pongo a tu disposición total. Dime qué buscas y lo encontramos.",
-    "¡Hola hermano! 👋 ¿Qué onda? Cuenta conmigo para lo que necesites. Aquí andamos para ayudarte.",
+GREETINGS_MORNING = [
+    "¡Buenos días! ☀️ Me llamo Abi y soy tu asistente de A2K Digital Studio. ¿Cómo amaneciste hoy? 😊",
+    "¡Buenos días! 🌅 Soy Abi, de A2K Digital Studio. Qué gusto saludarte tan temprano. Cuéntame, ¿en qué te puedo ayudar?",
+    "¡Buenos días hermano! ☀️ Aquí Abi, lista para ayudarte. ¿Tienes algún negocio? Seguro tengo algo que te va a servir 💪",
+    "¡Muy buenos días! 😃 Abi te saluda desde A2K Digital Studio. ¿Qué necesitas hoy? Estoy para servirte.",
+    "¡Buen día! ☀️ Soy Abi de A2K Digital Studio. Me alegra que me escribas. ¿A qué te dedicas? Quizás pueda ayudarte con tu negocio.",
 ]
 
+GREETINGS_AFTERNOON = [
+    "¡Buenas tardes! 😊 Soy Abi de A2K Digital Studio. ¿Cómo te va hoy?",
+    "¡Buenas tardes! 🌤️ Aquí Abi, tu asistente de confianza en A2K Digital Studio. ¿Qué necesitas?",
+    "¡Hey! Buenas tardes 😄 Soy Abi, ¿cómo está tu día? Si tienes un negocio, tengo justo lo que necesitas.",
+    "¡Buenas tardes! 👋 Abi de A2K Digital Studio a tu servicio. ¿Tienes un negocio? Te tengo la solución ideal.",
+    "¡Qué buenas tardes! 🤙 Soy Abi, tu experta en soluciones tecnológicas. Cuéntame, ¿en qué te puedo ayudar hoy?",
+]
+
+GREETINGS_EVENING = [
+    "¡Buenas noches! 🌙 Soy Abi de A2K Digital Studio. ¿Cómo te fue hoy? Aún estoy aquí para ayudarte.",
+    "¡Buenas noches! ✨ Soy Abi, de A2K Digital Studio. Sé que es tarde, pero si necesitas algo para tu negocio, aquí estoy.",
+    "¡Buenas noches hermano! 🌜 Aquí Abi. ¿Necesitas algo para tu negocio? Estoy despierta y lista para ayudarte.",
+    "¡Buenas noches! 😊 Soy Abi de A2K. ¿En qué te puedo ayudar? Si tienes dudas sobre algún sistema, ahora es buen momento.",
+    "¡Buenas noches! 🌟 Abi te saluda. Sé que es tarde, pero tu negocio no espera. ¿Te cuento qué tenemos?",
+]
+
+GREETINGS_RETURNING = [
+    "¡Qué gusto verte de vuelta! 😊 Ya te conozco, somos como viejos amigos jajaja. Soy Abi de A2K Digital Studio. ¿Qué tal está todo?",
+    "¡Hey! Tú de nuevo por aquí! 👋 Me alegra mucho, aquí está Abi lista para ayudarte. ¿Qué novedades tienes?",
+    "¡Hola de nuevo! 😄 Qué gusto que regreses. Soy Abi de A2K Digital Studio. ¿Ya tienes algo en mente o quieres que te muestre las novedades?",
+    "¡Bienvenido de vuelta! 🙌 Me hace feliz verte otra vez. Abi está aquí para ti. ¿Qué necesitas hoy?",
+    "¡Epa! Otra vez tú! 😆 Qué bueno que regreses. Aquí Abi, tu asistente de siempre en A2K Digital Studio.",
+]
+
+GREETINGS_GENERIC = [
+    "¡Hola! 😊 Soy Abi, tu asistente de A2K Digital Studio. Estoy aquí para ayudarte a encontrar la solución perfecta para tu negocio.",
+    "¡Hola! 👋 Soy Abi de A2K Digital Studio. ¿Tienes un negocio? Te tengo algo que te va a encantar.",
+    "¡Saludos! 😄 Me llamo Abi y trabajo en A2K Digital Studio. Creamos sistemas que hacen que tu negocio trabaje solo.",
+    "¡Hey! 😃 Bienvenido a A2K Digital Studio. Soy Abi, tu experta en soluciones para negocios. ¿En qué te puedo ayudar?",
+    "¡Qué tal! ✨ Soy Abi de A2K Digital Studio. Si tienes un negocio, estoy segura de que tenemos algo para ti.",
+]
+
+def get_greeting(user_id):
+    """Obtiene el saludo apropiado según hora y si es usuario recurrente."""
+    if is_returning_user(user_id):
+        return random.choice(GREETINGS_RETURNING)
+    time_g = get_time_greeting()
+    if time_g == 'buenos_dia':
+        return random.choice(GREETINGS_MORNING)
+    elif time_g == 'buenas_tardes':
+        return random.choice(GREETINGS_AFTERNOON)
+    else:
+        return random.choice(GREETINGS_EVENING)
+
+# ==================== PHASE 2: BUSINESS DISCOVERY ====================
+
+PREGUNTAS_NEGOCIO = [
+    'Cuéntame, ¿qué tipo de negocio tienes? Así te puedo recomendar la solución perfecta 💪',
+    '¿Me cuentas qué tipo de negocio manejas? Tenemos sistemas para diferentes rubros 😊',
+    'Dime, ¿a qué te dedicas? Quiero recomendarte algo que realmente te sirva 😄',
+    '¿Qué tipo de negocio tienes? Mira, tenemos apps para barberías, ferreterías, bodegas, farmacias y más. Cuéntame y te digo cuál es la tuya 🎯',
+    'Oye, ¿tienes un negocio propio? Si es así, dime de qué trata y te consigo la herramienta ideal para llevarlo al siguiente nivel 🚀',
+    '¿Manejas algún negocio? En A2K Digital Studio tenemos 9 aplicaciones profesionales. Solo dime tu rubro y te recomiendo la perfecta 💡',
+    'Si me dices qué tipo de negocio tienes, puedo ahorrarte horas de trabajo manual 😏 Te sorprendería lo que tenemos.',
+    '¿Eres dueño de algún negocio? Cuenta conmigo, tengo la app perfecta esperándote 🏆',
+    '¿A qué te dedicas profesionalmente? Quiero ayudarte a potenciar tu negocio con tecnología de verdad 🔥',
+    '¿Tienes algún negocio o emprendimiento? Soy experta en encontrar la herramienta ideal para cada rubro. ¡Dime y te asesoro gratis! 😎',
+]
+
+PREGUNTAS_NEGOCIO_FOLLOWUP = [
+    'Mmm, déjame entender mejor... ¿vendes productos, ofreces servicios, o ambas cosas? 🤔',
+    'Ajá, y ¿es un negocio pequeño, mediano o ya tienes varias sucursales? Así te recomiendo mejor 💡',
+    '¿Y cómo llevas el control actualmente? ¿Con cuaderno, Excel, o ya usas algún sistema? 😄',
+    'Interesante... ¿y cuál es el mayor problema que tienes hoy con tu negocio? Tal vez pueda ayudarte con eso 🎯',
+    '¿Y cuánto tiempo llevas con el negocio? Eso me ayuda a entender qué necesitas 📊',
+    '¿Tienes empleados o lo manejas solo/a? Eso cambia un poco la recomendación 👥',
+    'Mira, cuéntame más sobre tu día a día en el negocio. ¿Qué es lo que más te complica? ✨',
+    '¿Y qué es lo primero que harías si pudieras automatizar algo de tu negocio? 🔧',
+]
+
+# ==================== PHASE 3: SALES PITCHES (3 por app) ====================
+
+SALES_PITCHES = {
+    'barberia': [
+        # Pitch 1
+        (
+            '¡Perfecto! Tengo algo que te va a encantar 💈\n\n'
+            '*Barbería Pro* es un sistema completo diseñado exclusivamente para barberos como tú. '
+            'Imagínate tener todo esto:\n\n'
+            '✅ *Turnos organizados* — nunca más se te cruza un cliente\n'
+            '✅ *Historial completo de clientes* — sabes qué corte le hicieron la última vez\n'
+            '✅ *Caja y reportes diarios* — sabes exactamente cuánto ganaste al día\n'
+            '✅ *Facturas profesionales* — tu negocio se ve serio y profesional\n'
+            '✅ *Modo oscuro incluido* — porque el estilo importa 💅\n\n'
+            'Lo mejor es que más de 50 barberos ya lo usan en Venezuela y están encantados 💪\n\n'
+            '¿Sabes lo que más les gusta? Que se pagó sola en el primer mes. '
+            'Dejaron de perder clientes por desorganización y empezaron a ganar más.\n\n'
+            '¿Te gustaría ver cómo funciona? 🎥'
+        ),
+        # Pitch 2
+        (
+            '¡Oye! Sé exactamente lo que necesitas para tu barbería 💈🔥\n\n'
+            '¿Te pasa que los clientes llegan y no sabes quién sigue? '
+            '¿O que al final del día no sabes cuánto ganaste de verdad? '
+            'Eso se acaba con *Barbería Pro*.\n\n'
+            'Esto es lo que hace por ti:\n\n'
+            '📅 *Agenda inteligente* — cada cliente tiene su turno, sin confusiones\n'
+            '💇 *Ficha de cada cliente* — nombre, corte favorito, fecha de última visita\n'
+            '💰 *Caja cerrada* — entras, cobras, sales y sabes exactamente tu ganancia\n'
+            '📊 *Reportes semanales* — ves si estás creciendo o estancado\n'
+            '🧾 *Facturas automáticas* — para los clientes que las necesitan\n\n'
+            'Más de 50 barberos ya confiaron en nosotros y sus negocios crecieron un 40% en promedio 📈\n\n'
+            'Por solo *$25 USD*, una sola vez. Sin mensualidades. Sin letra pequeña.\n\n'
+            '¿Te animas a probarla? 🎯'
+        ),
+        # Pitch 3
+        (
+            'Mira, voy a ser directa contigo porque sé que los barberos no pierden tiempo 💈😎\n\n'
+            '*Barbería Pro* no es solo un software, es tu socio silencioso.\n\n'
+            'Piensa en esto:\n\n'
+            '❌ *Sin sistema:* Pierdes clientes porque no organizas bien los turnos, '
+            'no sabes cuánto vendiste, y te pasas horas haciendo cuentas.\n\n'
+            '✅ *Con Barbería Pro:* Automatizas turnos, llevas el control de cada cliente, '
+            'cierras caja en 2 minutos y generas reportes con un clic.\n\n'
+            '¿La inversión? *$25 USD*. Una. Sola. Vez.\n\n'
+            'Un corte de barba cuesta entre $5 y $15. Con solo 2-3 clientes extras al mes '
+            'que no perderías por mala organización, ya pagaste la app.\n\n'
+            'Más de 50 barberos en Venezuela ya lo usan. ¿Vas a ser el último en modernizarte? 😏\n\n'
+            'Da el paso, te lo vas a agradecer. ¿Vamos? 👇'
+        ),
+    ],
+    'nail': [
+        # Pitch 1
+        (
+            '¡Genial! Sé que el mundo de las uñas es competitivo y tú necesitas destacarte 💅✨\n\n'
+            '*Nail Studio Pro* es el sistema que necesitan las profesionales como tú.\n\n'
+            'Mira lo que incluye:\n\n'
+            '📅 *Agenda inteligente* — tus clientas reservan y tú no pierdes ninguna cita\n'
+            '👩 *Ficha completa de clientas* — sabes qué diseño le hicieron, qué materiales usaron y cuándo volver\n'
+            '💅 *Catálogo de servicios* — organizas tus manicuras, pedicuras, diseños con precios claros\n'
+            '📦 *Control de materiales* — nunca más te quedas sin esmalte a mitad del día\n'
+            '💵 *Caja dual ($ y Bs)* — porque en Venezuela cobramos en ambas monedas\n'
+            '📊 *Reportes por período* — sabes cuál es tu servicio más vendido\n\n'
+            'Más de 50 nail studios ya confían en este sistema 💪\n\n'
+            '¿Te gustaría ver la demo? Puedes probarla antes de decidir 🎥'
+        ),
+        # Pitch 2
+        (
+            '¡Amiga! Si tienes un nail studio, esto es para ti 💅🔥\n\n'
+            'Sé los problemas que enfrentas:\n\n'
+            '😰 Clientas que no vuelven porque no les das seguimiento\n'
+            '😰 No sabes cuánto material gastas vs. cuánto cobras\n'
+            '😰 La caja es un desastre entre dólares y bolívares\n'
+            '😰 Pierdes tiempo buscando qué diseño le hiciste a cada clienta\n\n'
+            '*Nail Studio Pro* resuelve TODO eso:\n\n'
+            '✅ *Historial por clienta* — nombre, diseño, fecha, materiales usados\n'
+            '✅ *Caja doble* — manejas dólares y bolívares sin volverte loca\n'
+            '✅ *Inventario de materiales* — control exacto de lo que entra y sale\n'
+            '✅ *Agenda organizada* — nunca más una clienta sin cita\n\n'
+            'Por *$25 USD*, una sola vez. Tu inversión se recupera con 2-3 clientas nuevas 💰\n\n'
+            'Más de 50 estudios de belleza ya lo usan. ¿Te quedas fuera? 😊'
+        ),
+        # Pitch 3
+        (
+            '¿Sabes cuál es la diferencia entre un nail studio que crece y uno que se estanca? '
+            'La organización 💅🎯\n\n'
+            '*Nail Studio Pro* fue diseñado por y para profesionales de la belleza. No es un '
+            'programa genérico, es TU herramienta.\n\n'
+            '¿Qué cambia cuando lo usas?\n\n'
+            '📈 Tus clientas vuelven porque les das un servicio profesional con factura e historial\n'
+            '📈 Dejas de perder dinero en materiales porque ahora llevas control\n'
+            '📈 Sabes exactamente cuánto ganas en dólares y en bolívares\n'
+            '📈 Tu agenda se llena porque nunca olvidas dar seguimiento\n\n'
+            'Son *$25 USD*, un pago único. Piensa en esto: un set de gel cuesta $15-20. '
+            'Por el precio de un set, tienes un sistema que te va a generar muchísimo más dinero 💎\n\n'
+            'Más de 50 profesionales ya lo tienen. ¿Listas para unirte? 👇'
+        ),
+    ],
+    'repuestos': [
+        # Pitch 1
+        (
+            '¡Perfecto! Los negocios de repuestos de motos están en auge 🏍️💪\n\n'
+            '*Repuestos de Motos Pro* es el sistema que te va a organizar la vida.\n\n'
+            '¿Te suena esto?\n\n'
+            '❌ Un cliente pregunta por una pieza y tardas 10 minutos en encontrarla\n'
+            '❌ No sabes cuántas piezas tienes en stock hasta que se acaban\n'
+            '❌ Al cierre del mes no tienes idea de cuánto vendiste realmente\n\n'
+            'Con este sistema, todo eso cambia:\n\n'
+            '🔍 *Catálogo completo de repuestos* — buscas en segundos, no en minutos\n'
+            '📦 *Inventario en tiempo real* — sabes exactamente qué tienes y qué te falta\n'
+            '🛒 *Ventas rápidas* — registras una venta en menos de 30 segundos\n'
+            '📊 *Reportes de movimiento* — ves qué se vende más y qué se estanca\n'
+            '👥 *Base de clientes y proveedores* — todo organizado\n\n'
+            'Más de 50 tiendas de repuestos ya lo usan en Venezuela 🇻🇪\n\n'
+            '¿Quieres ver cómo funciona? 🎥'
+        ),
+        # Pitch 2
+        (
+            '¡Qué bueno! El negocio de repuestos de motos es uno de los que más crece 🏍️🔥\n\n'
+            'Pero oye, seré honesta: si no tienes un buen sistema, estás perdiendo dinero. '
+            'Te lo digo con cariño 💪\n\n'
+            '*Repuestos de Motos Pro* te da:\n\n'
+            '✅ *Catálogo digital* — cada pieza con código, precio y stock actualizado\n'
+            '✅ *Alertas de stock bajo* — te avisa antes de que se te acabe algo\n'
+            '✅ *Ventas con búsqueda rápida* — escribes parte del nombre y aparece\n'
+            '✅ *Control de proveedores* — sabes a quién le debes y quién te debe\n'
+            '✅ *Reportes detallados* — al final del mes sabes exactamente tu ganancia\n'
+            '✅ *Gestión de precios* — ajustas precios por mayor o detal\n\n'
+            'Por *$25 USD*, una sola vez. Una sola pieza que vendas de más por tener '
+            'buen stock y ya te pagaste el sistema 💰\n\n'
+            '¿Te animas? 🎯'
+        ),
+        # Pitch 3
+        (
+            'Vamos a hablar de números, que es lo que importa 🏍️📊\n\n'
+            '¿Cuántas ventas pierdes al mes porque no encuentras una pieza rápido? '
+            '¿Cuántas veces un cliente se va a otra tienda porque tú no sabías si tenías stock?\n\n'
+            '*Repuestos de Motos Pro* elimina ese problema completamente:\n\n'
+            '⚡ *Búsqueda instantánea* — escribes y encuentras la pieza en 2 segundos\n'
+            '⚡ *Stock preciso* — sabes al momento cuántas unidades tienes\n'
+            '⚡ *Ventas en 30 segundos* — scan, cobras, listo\n'
+            '⚡ *Reportes que te dan poder* — sabes qué negociar con proveedores\n\n'
+            'Más de 50 comercios de motos ya modernizaron su operación. El promedio: '
+            'aumentaron sus ventas un 30% en el primer mes por mejor atención al cliente 📈\n\n'
+            'Todo por *$25 USD*. Una. Sola. Vez. Sin suscripciones.\n\n'
+            'Tu negocio merece herramientas profesionales. ¿Estás listo? 👇'
+        ),
+    ],
+    'ferreteria': [
+        # Pitch 1
+        (
+            '¡Excelente! Las ferreterías son uno de los negocios más rentables si están bien organizados 🔧💰\n\n'
+            '*Ferretería A2K Pro* fue creado para que tu ferretería funcione como una máquina.\n\n'
+            'Esto es lo que te ofrece:\n\n'
+            '📦 *Inventario completo* — cada tornillo, herramienta y material registrado\n'
+            '🛒 *Punto de venta rápido* — facturas en segundos, no en minutos\n'
+            '🧾 *Facturación profesional* — tus clientes te ven como un negocio serio\n'
+            '🚚 *Control de proveedores* — sabes qué pedir, a quién y cuándo\n'
+            '📊 *Reportes financieros* — ganancias, costos, utilidades claras\n'
+            '👥 *Base de clientes* — para compras frecuentes y crédito\n\n'
+            'Más de 50 ferreterías en Venezuela ya confían en nosotros 💪\n\n'
+            '¿Te gustaría ver la demo? Estoy segura de que te va a gustar 🔥'
+        ),
+        # Pitch 2
+        (
+            '¿Sabías que la mayoría de las ferreterías pierden entre 10-15% de sus ganancias '
+            'por mala gestión de inventario? 🔧😱\n\n'
+            '*Ferretería A2K Pro* soluciona eso y más:\n\n'
+            '✅ *No más productos perdidos* — cada artículo tiene su registro exacto\n'
+            '✅ *No más ventas sin registro* — cada venta queda documentada\n'
+            '✅ *No más confusiones con proveedores* — sabes qué pediste y qué recibiste\n'
+            '✅ *No más cierres de mes dolorosos* — los reportes se generan solos\n\n'
+            'Imagínate esto: al final del mes, con un clic, sabes:\n'
+            '• Cuánto vendiste\n'
+            '• Qué productos se venden más\n'
+            '• Cuál es tu margen de ganancia\n'
+            '• A qué proveedores les debes\n\n'
+            'Todo por *$25 USD*. Tu ferretería vale más que eso. Invierte en ella 💎'
+        ),
+        # Pitch 3
+        (
+            'Hermano, si tienes una ferretería, necesitas escuchar esto 🔧💪\n\n'
+            'Yo conozco el negocio. Sé que manejas cientos de productos diferentes, '
+            'que tienes varios proveedores, y que el inventario puede ser una pesadilla.\n\n'
+            '*Ferretería A2K Pro* nació para simplificarte la vida:\n\n'
+            '🎯 *Vende más rápido* — buscas cualquier producto en segundos\n'
+            '🎯 *Pierde menos* — control exacto de cada pieza en stock\n'
+            '🎯 *Gana más* — reportes que te muestran dónde está tu dinero\n'
+            '🎯 *Crece más* — con datos, tomas mejores decisiones\n\n'
+            'Más de 50 ferreterías ya lo usan y el resultado es claro: '
+            'menos errores, menos pérdidas, más ganancias 📈\n\n'
+            'Son $25 USD. Una vez. Para siempre.\n\n'
+            '¿Vas a dejar que la competencia se adelante? 😏'
+        ),
+    ],
+    'bodega_descarga': [
+        # Pitch 1
+        (
+            '¡Ahora sí estamos hablando! Las bodegas y abastos son el corazón de cada comunidad 📦💪\n\n'
+            '*Bodega Descarga Pro* es el sistema más completo que hemos creado. '
+            'Y tiene algo que ningún otro tiene: *funciona SIN internet* 📴\n\n'
+            '¿Te suena esto?\n\n'
+            '☔ Se va la luz y no puedes cobrar\n'
+            '📵 Se cae el internet y tu punto de venta se bloquea\n'
+            '❌ Los clientes se van porque no puedes facturar\n\n'
+            'Con *Bodega Descarga Pro* eso NO pasa:\n\n'
+            '✅ *Funciona OFFLINE* — sigue vendiendo sin internet ni luz (con UPS)\n'
+            '✅ *Inventario inteligente* — control total de cada producto\n'
+            '✅ *Todos los métodos de pago VE* — bolívares, dólares, punto de venta, pago móvil\n'
+            '✅ *Gestión de fiados* — nunca más pierdes el registro de quién te debe\n'
+            '✅ *Escáner de códigos* — agilizas las ventas al máximo\n'
+            '✅ *Reportes detallados* — sabes exactamente cómo va tu negocio\n\n'
+            'Más de 50 bodegas ya lo usan en Venezuela. ¿Te unes? 🎯'
+        ),
+        # Pitch 2
+        (
+            'Oye, si manejas una bodega o abasto, NECESITAS esto 📦🔥\n\n'
+            'Sé lo difícil que es: cientos de productos, clientes que piden fiado, '
+            'el internet que se va cuando más lo necesitas... 🤦\n\n'
+            '*Bodega Descarga Pro* fue diseñado pensando en TI:\n\n'
+            '📴 *OFFLINE primero* — funciona sin internet, sincroniza cuando vuelve\n'
+            '💳 *Todos los pagos* — efectivo, tarjeta, pago móvil, Zelle, transferencia\n'
+            '👥 *Fiados organizados* — sabes quién te debe y cuánto\n'
+            '📦 *Stock en tiempo real* — nunca más vendes algo que no tienes\n'
+            '🧾 *Facturas automáticas* — profesionales y rápidas\n'
+            '📊 *Reportes completos* — diarios, semanales, mensuales\n\n'
+            'Y lo mejor: *$25 USD*, un solo pago. Para siempre.\n\n'
+            '¿Sabías que el 90% de nuestros clientes de bodegas recuperaron la inversión '
+            'en la primera semana? Solo por dejar de perder ventas cuando se cae el internet 📈'
+        ),
+        # Pitch 3
+        (
+            '¡Hablemos de bodegas! 📦 Yo sé que ese negocio no perdona.\n\n'
+            'Un día sin sistema es un día perdiendo dinero. Y en Venezuela, '
+            '¿cuántas veces se te cae el internet? 📵\n\n'
+            '*Bodega Descarga Pro* tiene la solución:\n\n'
+            '⚡ *OFFLINE nativo* — no depende de internet para funcionar\n'
+            '⚡ *Venta súper rápida* — escanea, cobra, factura en 10 segundos\n'
+            '⚡ *Multi-método de pago* — todos los que existen en Venezuela\n'
+            '⚡ *Control de fiados* — registro exacto de cada crédito\n'
+            '⚡ *Inventario automático* — se actualiza con cada venta\n\n'
+            'Los números hablan solos:\n'
+            '• 50+ bodegas usándolo en Venezuela\n'
+            '• 30% más ventas por tener sistema confiable\n'
+            '• 0% de quejas por caídas del sistema\n\n'
+            '*$25 USD*, un pago único. ¿Cuánto pierdes en un día sin poder cobrar? '
+            'Esa es la respuesta a si vale la pena 💰\n\n'
+            '¿Vamos? 👇'
+        ),
+    ],
+    'mercado_logic': [
+        # Pitch 1
+        (
+            '¡Wow! Si manejas un negocio de gran escala, necesitas herramientas de gran escala 🛒🏆\n\n'
+            '*MERCADO LOGIC PRO* es nuestro sistema más avanzado. Es el Ferrari de los puntos de venta.\n\n'
+            'Esto es lo que incluye:\n\n'
+            '🔒 *Sistema IRON LOCK v2* — seguridad de nivel empresarial para tu licencia\n'
+            '🛒 *Punto de venta industrial* — diseñado para alto volumen de transacciones\n'
+            '📦 *Inventario multi-almacén* — controla varias sedes desde un solo lugar\n'
+            '📊 *Reportes avanzados* — analíticas que te dan poder de decisión\n'
+            '👥 *Multi-usuario y permisos* — cada empleado ve solo lo que debe ver\n'
+            '💳 *Integración de pagos* — compatible con múltiples pasarelas\n'
+            '📈 *Analíticas de ventas* — datos en tiempo real para decisiones inteligentes\n'
+            '🔧 *Altamente personalizable* — se adapta a TU negocio, no al revés\n\n'
+            '¿Te gustaría ver una demo? Este sistema impresiona al más exigente 🎥'
+        ),
+        # Pitch 2
+        (
+            'Si tienes un supermercado, mercado o negocio industrial, estás en el lugar correcto 🛒🔥\n\n'
+            '*MERCADO LOGIC PRO* no es para principiantes. Es para quienes quieren ser los mejores.\n\n'
+            '¿Por qué es diferente a todo lo demás?\n\n'
+            '✅ *IRON LOCK v2* — tu licencia está protegida con la mejor tecnología\n'
+            '✅ *Multi-almacén* — maneja 2, 5 o 20 sucursales desde un solo sistema\n'
+            '✅ *Multi-usuario* — cajeros, supervisores, administradores con permisos distintos\n'
+            '✅ *Miles de productos* — sin sacrificar velocidad\n'
+            '✅ *Analíticas en vivo* — sabes lo que pasa en tu negocio a cada momento\n\n'
+            'Empresas de gran escala ya lo usan y los resultados son impresionantes 📈\n\n'
+            '*$25 USD*, un pago único. Sí, leíste bien. Toda esa potencia por ese precio.\n\n'
+            '¿Estás listo para llevar tu negocio al siguiente nivel? 🚀'
+        ),
+        # Pitch 3
+        (
+            'Voy a ser directo: si tu negocio mueve mucho volumen y NO tienes un sistema profesional, '
+            'estás dejando dinero sobre la mesa 🛒💯\n\n'
+            '*MERCADO LOGIC PRO* es lo que usan los negocios que quieren crecer de verdad:\n\n'
+            '🏢 *Escalabilidad total* — de 1 a 100 puntos de venta\n'
+            '🔐 *Seguridad IRON LOCK v2* — imposible de piratear\n'
+            '📊 *Datos que importan* — no solo ventas, sino tendencias, márgenes, productividad\n'
+            '👥 *Equipo organizado* — cada persona con su rol y permisos\n'
+            '⚙️ *Personalización extrema* — lo ajustamos a tu flujo de trabajo exacto\n\n'
+            '¿Cuánto vale un sistema empresarial? Normalmente $200-500 al mes.\n'
+            'Nosotros: *$25 USD*, una sola vez. Sin letra pequeña.\n\n'
+            'Haces la matemática. Nosotros ya la hicimos por ti 💰\n\n'
+            '¿Quieres verlo en acción? 👇'
+        ),
+    ],
+    'farmacia': [
+        # Pitch 1
+        (
+            '¡Perfecto! Las farmacias son negocios delicados que necesitan control preciso 💊🏥\n\n'
+            '*Farmacia Pro Plus* fue diseñado con todo lo que una farmacia necesita:\n\n'
+            '💊 *Control de medicamentos* — cada producto con su registro completo\n'
+            '📦 *Inventario por lote* — controlas fechas de elaboración y vencimiento\n'
+            '📅 *Alertas de vencimiento* — nunca más vendes un producto vencido\n'
+            '🛒 *Punto de venta rápido* — porque en salud no hay tiempo que perder\n'
+            '👥 *Historial de clientes* — sabes qué les recetaron y qué compraron antes\n'
+            '📊 *Reportes regulatorios* — para cumplir con las exigencias legales\n\n'
+            'Más de 50 farmacias ya lo usan en Venezuela 💪\n\n'
+            '¿Te gustaría ver cómo funciona? En salud, la organización salva vidas y negocios 🎥'
+        ),
+        # Pitch 2
+        (
+            'Si manejas una farmacia, sabes que no puedes permitirte errores 💊⚠️\n\n'
+            'Un medicamento vencido puede costarte la licencia. '
+            'Un inventario desordenado puede costarte clientes. '
+            'Una venta mal registrada puede costarte auditorías.\n\n'
+            '*Farmacia Pro Plus* te da la tranquilidad que necesitas:\n\n'
+            '✅ *Control total por lotes* — sabes exactamente qué vence y cuándo\n'
+            '✅ *Alertas automáticas* — te avisa antes de que algo venza\n'
+            '✅ *Historial de clientes* — para recetas y compras frecuentes\n'
+            '✅ *Reportes para regulación* — cumple con los requisitos legales\n'
+            '✅ *Ventas rápidas* — porque los clientes no esperan\n\n'
+            'Por *$25 USD*, una sola vez. ¿Cuánto vale la tranquilidad de saber que tu '
+            'inventario está perfecto? 💰\n\n'
+            '¿Te animas a ver la demo? 💊'
+        ),
+        # Pitch 3
+        (
+            '¿Sabías que las farmacias que usan software de gestión tienen un 25% menos '
+            'de pérdidas por vencimiento? 💊📊\n\n'
+            '*Farmacia Pro Plus* hace la diferencia:\n\n'
+            '🎯 *Lotes controlados* — cada entrada de producto queda registrada con fecha y lote\n'
+            '🎯 *Vencimiento vigilado* — alertas automáticas antes de la fecha límite\n'
+            '🎯 *Ventas seguras* — cada venta queda documentada con nombre del medicamento\n'
+            '🎯 *Clientes fieles* — historial completo para mejor servicio\n'
+            '🎯 *Cumplimiento legal* — reportes que cumplen con las normativas\n\n'
+            'Más de 50 farmacias ya confían en este sistema. Y saben por qué: '
+            'porque en el negocio de la salud, no hay margen para errores.\n\n'
+            '*$25 USD*. Una inversión que previene pérdidas que pueden ser miles de dólares.\n\n'
+            '¿Vas a arriesgarte a seguir operando sin sistema? 💊'
+        ),
+    ],
+    'fruteria': [
+        # Pitch 1
+        (
+            '¡Qué rico negocio! Las fruterías y verdulerías nunca pasan de moda 🍎🥬\n\n'
+            '*Frutería Pro* viene con algo increíble: *74 productos pre-cargados* de fábrica.\n'
+            '¡No necesitas configurar nada!\n\n'
+            'Esto es lo que incluye:\n\n'
+            '🍎 *74 productos pre-cargados* — listo para vender desde el día 1\n'
+            '📦 *Control de inventario* — sabes cuánto tienes de cada fruta y verdura\n'
+            '🛒 *Ventas rápidas* — porque la fruta no espera\n'
+            '📊 *Reportes diarios* — al cierre sabes exactamente cuánto vendiste\n'
+            '🏷️ *Gestión de precios* — ajustas según la temporada\n'
+            '📅 *Control de fechas* — evitas pérdidas por productos vencidos\n\n'
+            'Más de 50 fruterías ya lo usan en Venezuela 💪\n\n'
+            '¿Quieres ver cómo funciona? Tu negocio merece este upgrade 🎥'
+        ),
+        # Pitch 2
+        (
+            'Si vendes frutas y verduras, sabes que el tiempo es oro 🍎⏰\n\n'
+            'Cada hora que pasa, tus productos pierden frescura. Necesitas vender rápido '
+            'y tener control exacto de lo que entra y sale.\n\n'
+            '*Frutería Pro* es la solución:\n\n'
+            '✅ *74 productos ya cargados* — plátano, tomate, lechuga, mango... ¡todo listo!\n'
+            '✅ *Venta en segundos* — buscas, agregas, cobras. Fin.\n'
+            '✅ *Inventario al día* — sabes qué reponer antes de que se acabe\n'
+            '✅ *Control de mermas* — registras lo que se pierde y por qué\n'
+            '✅ *Reportes que ayudan* — sabes qué fruta te deja más ganancia\n\n'
+            'Por *$25 USD*, un solo pago. ¿Sabes cuánto pierdes en un día por no llevar '
+            'control? Probablemente más de eso 💰\n\n'
+            '¿Te animas a modernizar tu frutería? 🍊'
+        ),
+        # Pitch 3
+        (
+            'Mira, en el negocio de las frutas y verduras, la clave es ROTACIÓN 🍎🔄\n\n'
+            '¿Cómo rotas rápido si no sabes qué tienes? ¿Cómo cobras rápido si buscas precios a mano?\n\n'
+            '*Frutería Pro* te da la ventaja competitiva:\n\n'
+            '⚡ *74 productos pre-cargados* — desde plátano hasta cambur, todo incluido\n'
+            '⚡ *Venta express* — cobras en 5 segundos, no en 5 minutos\n'
+            '⚡ *Stock visible* — ves al momento qué te falta y qué te sobra\n'
+            '⚡ *Precios flexibles* — los ajustas según la oferta y demanda del día\n'
+            '⚡ *Cierre de día automático* — un clic y sabes tu ganancia\n\n'
+            'Más de 50 fruterías en Venezuela ya modernizaron su operación con esta app.\n'
+            'El resultado: menos pérdidas, más ventas, clientes más felices 📈\n\n'
+            'Todo por *$25 USD*. Una vez. Para siempre.\n\n'
+            '¿Tu frutería merece mejor herramientas? Por supuesto que sí 👇'
+        ),
+    ],
+    'bodega_cloud': [
+        # Pitch 1
+        (
+            '¡La nube es el futuro! Y tu negocio también debería estar ahí ☁️🚀\n\n'
+            '*Bodega Pro Cloud* es toda la potencia de nuestro sistema de bodegas, '
+            'pero con sincronización en tiempo real desde cualquier lugar.\n\n'
+            '¿Qué significa esto para ti?\n\n'
+            '☁️ *Accede desde cualquier dispositivo* — celular, tablet, computadora\n'
+            '📱 *Multi-dispositivo* — tú y tus empleados ven lo mismo al mismo tiempo\n'
+            '📦 *Inventario en tiempo real* — si venden en una sucursal, se actualiza en todas\n'
+            '📊 *Reportes en línea* — ve tus números desde tu casa o desde la playa\n'
+            '🔒 *Respaldo automático* — tus datos seguros, sin miedo a perder nada\n'
+            '👥 *Colaboración en equipo* — todos trabajan con la misma información\n\n'
+            '¿Te gustaría ver la demo? El futuro ya llegó, no te quedes atrás ☁️'
+        ),
+        # Pitch 2
+        (
+            '¿Tienes varias sucursales o quieres revisar tu negocio desde casa? ☁️💡\n\n'
+            '*Bodega Pro Cloud* es la evolución que tu negocio necesita:\n\n'
+            '✅ *Todo en la nube* — sin servidores locales que mantener\n'
+            '✅ *Sincronización instantánea* — lo que pasa en una tienda, las otras lo saben\n'
+            '✅ *Acceso remoto* — revisa ventas, stock y reportes desde tu celular\n'
+            '✅ *Seguridad total* — respaldo automático y cifrado de datos\n'
+            '✅ *Multi-usuario* — cada empleado con su acceso y permisos\n'
+            '✅ *Actualizaciones automáticas* — siempre tienes la última versión\n\n'
+            'Por *$25 USD*, un solo pago. ¿Sabes cuánto cuesta un sistema en la nube? '
+            'Normalmente $50-200 al mes. Nosotros te lo damos para siempre por $25 💰\n\n'
+            '¿Estás listo para la nube? ☁️'
+        ),
+        # Pitch 3
+        (
+            'Déjame hacerte una pregunta: ¿cuántas veces has querido revisar cómo va tu negocio '
+            'desde fuera y no pudiste? ☁️🤔\n\n'
+            '*Bodega Pro Cloud* elimina esa limitación:\n\n'
+            '🌐 *Tu negocio en tu bolsillo* — accedes desde cualquier lugar del mundo\n'
+            '📊 *Datos en tiempo real* — no esperas a fin de mes para saber cómo vas\n'
+            '🔄 *Sincronización automática* — sin configuraciones complicadas\n'
+            '🛡️ *Respaldo en la nube* — si tu computadora se daña, tus datos están a salvo\n'
+            '👥 *Equipo conectado* — todos los puntos de venta hablan entre sí\n\n'
+            'Más de 50 negocios ya están en la nube con nosotros. Y sabes qué dicen? '
+            '"No sé cómo operaba sin esto antes" 💪\n\n'
+            '*$25 USD*, una sola vez. Tecnología empresarial a precio de emprendedor.\n\n'
+            '¿Vamos a subir tu negocio a la nube? ☁️👇'
+        ),
+    ],
+}
+
+# ==================== PHASE 4: OBJECTION HANDLING ====================
+
+OBJECIONES = {
+    'caro': {
+        'triggers': ['caro', 'mucha plata', 'no tengo', 'costoso', 'no puedo pagar',
+                      'no reacha', 'muy costoso', 'mucho dinero', 'no da', 'no tengo dinero',
+                      'sobra', 'fuera de presupuesto', 'muy alto'],
+        'respuestas': [
+            (
+                'Entiendo perfectamente 💛 Pero oye, déjame ponerlo en perspectiva:\n\n'
+                'Son *$25 USD*, un solo pago. Sin mensualidades. Para siempre.\n\n'
+                '¿Sabes qué cuesta un sistema de punto de venta normal?\n'
+                'Entre $30 y $100 al MES. En un año pagas $360-1,200. '
+                'Con nosotros pagas $25 UNA VEZ y ya.\n\n'
+                'Además, piensa en esto: ¿cuánto dinero pierdes al mes por no tener '
+                'un buen sistema?Errores, ventas perdidas, mala organización... '
+                'Eso seguro supera los $25 💰\n\n'
+                '¿Qué te parece si primero ves la demo gratis y luego decides? 🎥'
+            ),
+            (
+                'Te entiendo, el dinero hay que cuidarlo 💪 Pero escucha esto:\n\n'
+                '*$25 USD* es literalmente lo que cuesta:\n'
+                '• Un corte de cabello en una barbería decente\n'
+                '• Una manicura básica\n'
+                '• 2 pizzas grandes\n\n'
+                'La diferencia es que nuestra app te VA A GENERAR dinero, no a costarte. '
+                'Más de 50 negocios recuperaron la inversión en la primera semana 📈\n\n'
+                'Y si no te convence, siempre puedes ver la demo gratis primero. Sin compromiso 🤝'
+            ),
+            (
+                'Jaja, te voy a ser sincera: *$25 USD* por un sistema profesional '
+                'NO es caro. Es una ganga 😄\n\n'
+                'Otros sistemas cobran:\n'
+                '• Odoo: $25-75 al MES\n'
+                '• Sales Force: $25 al MES por usuario\n'
+                '• Square: 2.6% de cada venta, siempre\n\n'
+                'Nosotros: $25 una vez. Punto. Se acabó.\n\n'
+                'Piensa en ello como una inversión, no como un gasto. '
+                '¿Cuánto ganarías si pudieras vender más rápido, organizarte mejor '
+                'y no perder clientes? Eso vale muchísimo más que $25 💎\n\n'
+                '¿Quieres ver la demo para convencerte? 🎥'
+            ),
+            (
+                'Hermano, sé que la situación en Venezuela es difícil, pero por eso mismo '
+                'necesitas herramientas que te hagan más eficiente 💪\n\n'
+                'Si un sistema de $25 USD te permite:\n'
+                '✅ Vender más rápido\n'
+                '✅ No perder clientes por desorganización\n'
+                '✅ Tener control de tu dinero\n'
+                '✅ Generar reportes para decisiones inteligentes\n\n'
+                'Entonces no es un gasto, es la mejor inversión que puedes hacer en tu negocio. '
+                'Se paga sola, te lo garantizo 📈\n\n'
+                '¿Y si primero pruebas la demo sin compromiso? 🎥'
+            ),
+        ],
+    },
+    'dudar': {
+        'triggers': ['no se', 'no estoy seguro', 'dudo', 'tengo dudas', 'es verdad',
+                      'estafa', 'fraude', 'mentira', 'no creo', 'sera cierto', 'confiable',
+                      'confia', 'engaño', 'truco'],
+        'respuestas': [
+            (
+                'Te entiendo perfectamente, la desconfianza es buena cuando se trata de tu dinero 💡\n\n'
+                'Pero oye, déjame decirte algo:\n\n'
+                '✅ Somos *A2K Digital Studio*, empresa registrada: Inversiones 2K 3112 C.A (J-40632338-1)\n'
+                '✅ Más de 50 negocios ya confían en nosotros\n'
+                '✅ Tenemos ingeniero de soporte que te atiende directamente por WhatsApp\n'
+                '✅ Puedes ver la demo ANTES de pagar\n'
+                '✅ Tenemos tienda online oficial\n\n'
+                'No tenemos nada que esconder 😊 De hecho, te invito a ver la demo gratis. '
+                'Te muestro cómo funciona y tú decides. Sin compromiso 🤝\n\n'
+                '¿Te parece justo? 🎥'
+            ),
+            (
+                'Jaja, entiendo tu duda. Pero fíjate en algo: tienes todo para ganar y nada que perder 💪\n\n'
+                '¿Por qué? Porque:\n\n'
+                '1️⃣ *Puedes ver la demo gratis* — te mostramos todo antes de que desembolses un centavo\n'
+                '2️⃣ *Soporte directo* — el ingeniero Abigail te atiende personalmente\n'
+                '3️⃣ *Empresa legal* — Inversiones 2K 3112 C.A, registrada y con RIF\n'
+                '4️⃣ *Más de 50 clientes satisfechos* — no estamos inventando nada\n'
+                '5️⃣ *Un solo pago* — no hay trampa de suscripciones ocultas\n\n'
+                'Si no te convence, no compras. Así de simple. Pero te aseguro que vas a quedar impresionado 😊\n\n'
+                '¿Ves la demo? 🎥'
+            ),
+            (
+                'Mira, la mejor prueba es verlo con tus propios ojos 🔍\n\n'
+                'Más de 50 negocios en Venezuela ya usan nuestros sistemas. '
+                '¿Crees que 50+ dueños de negocios habrían pagado si fuera una estafa? 🤔\n\n'
+                'Además:\n'
+                '🏢 Empresa formal: Inversiones 2K 3112 C.A\n'
+                '👨‍💻 Ingeniero disponible por WhatsApp\n'
+                '🛒 Tienda online oficial\n'
+                '🎥 Demo gratis antes de comprar\n\n'
+                'Te propongo algo: agrega al ingeniero en WhatsApp, pide la demo, '
+                'mírala funcionar, y después decides. Si no te convence, no pasa nada. '
+                'Si te convence, habrás encontrado una herramienta que vale oro 💎\n\n'
+                '¿Te parece bien? 👇'
+            ),
+        ],
+    },
+    'pensar': {
+        'triggers': ['voy a pensar', 'lo pienso', 'después', 'luego', 'te aviso',
+                      'te digo', 'más tarde', 'otro día', 'ya ves', 'nada por ahora',
+                      'quizás luego', 'ahora no'],
+        'respuestas': [
+            (
+                'Claro, lo entiendo 💛 Es una decisión importante y merece pensarse bien.\n\n'
+                'Solo te pido algo: no te olvides de nosotros 😄\n\n'
+                'Aquí tienes un dato para pensar:\n'
+                'Cada día que pasa sin un sistema de gestión, es un día que podrías estar '
+                'perdiendo clientes por desorganización, o perdiendo dinero por mala gestión.\n\n'
+                '¿Sabías que el promedio de tiempo que tardan nuestros clientes en decidir '
+                'es de 2 días? Y todos dicen: "mejor lo hubiera hecho antes" 😅\n\n'
+                'Te dejo el enlace a la tienda para que lo revises con calma:\n'
+                '🛒 [A2K Digital Studio]({store})\n\n'
+                'Cuando estés listo, aquí andamos. Yo no me canso 😊'
+            ),
+            (
+                'Jajaja, claro, piénsalo bien 💪 Pero oye, un consejito:\n\n'
+                '¿Sabes cuántos dueños de negocios me dicen "lo pienso" y vuelven '
+                'una semana después? Muchísimos. Y todos me dicen lo mismo: '
+                '"debería haberlo hecho antes"\n\n'
+                'Mientras tanto, la competencia sigue avanzando, los sistemas siguen mejorando, '
+                'y los precios... bueno, estos sí se mantienen por ahora 😏\n\n'
+                'Te dejo la tienda para que la revises:\n'
+                '🛒 [A2K Digital Studio]({store})\n\n'
+                'Y si necesitas algo, ya sabes dónde encontrarme. Estoy aquí 24/7 ✨'
+            ),
+            (
+                'No hay problema, es tu decisión y la respeto 💛\n\n'
+                'Pero no te vayas sin esto: cada semana más negocios se automatizan. '
+                'Los que no lo hacen, se quedan atrás. Es la realidad del mercado.\n\n'
+                'Mi consejo: márcate la tienda, revisa la demo cuando tengas tiempo, '
+                'y toma la decisión con información, no con dudas.\n\n'
+                '🛒 [A2K Digital Studio - Tienda]({store})\n'
+                '🎥 [Ver Demo]({store})\n\n'
+                'Cuando estés listo, me escribes y lo cerramos en 5 minutos. ¿Trato? 🤝'
+            ),
+        ],
+    },
+    'otro_sistema': {
+        'triggers': ['ya tengo', 'uso otro', 'tengo otro', 'otro sistema', 'ya uso',
+                      'tengo uno', 'trabajo con', 'cuento con', 'mi sistema'],
+        'respuestas': [
+            (
+                '¡Qué bueno que ya tienes un sistema! Eso dice mucho de ti 💪\n\n'
+                'Pero oye, déjame preguntarte algo: ¿estás 100% satisfecho con él?\n\n'
+                'Porque la mayoría de nuestros clientes también tenían sistema antes. '
+                '¿Y por qué cambiaron?\n\n'
+                '❌ El otro cobraba mensualidades — nosotros cobramos una vez\n'
+                '❌ El otro no tenía soporte directo — nosotros tienes ingeniero por WhatsApp\n'
+                '❌ El otro era complicado — el nuestro es fácil de usar\n'
+                '❌ El otro no tenía las funciones que necesitaban — nosotros las tienen\n\n'
+                'No te digo que cambies ahora. Solo te propongo algo: mira nuestra demo '
+                'y compara. Si tu sistema actual es mejor, seguimos siendo amigos 😊\n\n'
+                '¿Te parece justo? 🎥'
+            ),
+            (
+                'Perfecto, me gusta que ya estés tecnificado 👏\n\n'
+                'Solo una pregunta: ¿cuánto pagas al mes por tu sistema actual?\n\n'
+                'Porque si pagas mensualidades, estás gastando de más. Con nuestros sistemas, '
+                'pagas *$25 USD* una sola vez y listo.\n\n'
+                'Además, ¿tu sistema actual tiene:\n'
+                '• Soporte directo por WhatsApp?\n'
+                '• Demo gratuita?\n'
+                '• Actualizaciones sin costo?\n'
+                '• Funciones específicas para TU tipo de negocio?\n\n'
+                'Si la respuesta es no a alguna de esas, vale la pena mirarnos.\n'
+                'Sin compromiso. Solo compara 💡\n\n'
+                '¿Ves la demo? 🎥'
+            ),
+            (
+                'Respeto mucho que ya tengas un sistema 💯 Eso significa que te importa tu negocio.\n\n'
+                'Te cuento por qué muchos negocios cambiaron al nuestro:\n\n'
+                '1️⃣ *Precio:* $25 USD una vez vs. $30-100 al mes en otros\n'
+                '2️⃣ *Soporte:* Ingeniero directo por WhatsApp, no un chatbot\n'
+                '3️⃣ *Funciones:* Diseñado específicamente para tu rubro, no genérico\n'
+                '4️⃣ *Actualizaciones:* Gratis de por vida\n'
+                '5️⃣ *Modo offline:* Nuestros sistemas funcionan sin internet\n\n'
+                'No te pido que cambies a ciegas. Pide una demo, compáralo con lo que tienes, '
+                'y decide con datos. Si tu sistema actual es mejor, ¡genial! 😊\n\n'
+                'Pero si el nuestro es mejor... bueno, ya sabes qué hacer 👇'
+            ),
+        ],
+    },
+    'gratis': {
+        'triggers': ['gratis', 'free', 'no quiero pagar', 'regalar', 'sin costo',
+                      'gratuito', 'descarga gratis', 'pirata', 'crack', 'full gratis'],
+        'respuestas': [
+            (
+                'Jajaja, te entiendo 😄 A todos nos gusta lo gratis. Pero oye, escúchame:\n\n'
+                'No tenemos versión gratuita completa, PERO sí tenemos algo mejor: '
+                'una *demo totalmente gratis* donde ves el sistema funcionando con todos sus detalles 🎥\n\n'
+                '¿Por qué no es gratis? Porque detrás de cada sistema hay:\n'
+                '👨‍💻 Un ingeniero que lo desarrolló (cientos de horas)\n'
+                '🔧 Actualizaciones constantes\n'
+                '💬 Soporte técnico personalizado\n'
+                '🔒 Seguridad y estabilidad\n\n'
+                'Todo eso tiene un costo. Por eso es $25 USD una sola vez.\n\n'
+                'Pero la buena noticia es que puedes probar antes de decidir. '
+                'La demo es 100% gratis y sin compromiso 💡\n\n'
+                '¿Te animas a verla? 🎥'
+            ),
+            (
+                'Te voy a ser honesta 💪\n\n'
+                'Los sistemas gratis (crack, pirata, etc.) tienen problemas serios:\n\n'
+                '❌ Sin soporte — si algo falla, estás solo\n'
+                '❌ Sin actualizaciones — se quedan obsoletos rápido\n'
+                '❌ Sin seguridad — pueden tener virus o robar tus datos\n'
+                '❌ Ilegales — pueden causarte problemas\n'
+                '❌ No tienen funciones completas — suelen ser versiones limitadas\n\n'
+                'Por *$25 USD*, una sola vez, obtienes:\n'
+                '✅ Soporte técnico de por vida\n'
+                '✅ Actualizaciones gratis\n'
+                '✅ Sistema seguro y estable\n'
+                '✅ Todas las funciones incluidas\n\n'
+                '¿Vale la pena arriesgarse con algo gratis cuando por el precio de una comida '
+                'tienes algo profesional y seguro? 💰\n\n'
+                'Prueba la demo gratis y decide tú mismo 🎥'
+            ),
+            (
+                'Mira, la realidad es esta: un buen software cuesta dinero porque hay '
+                'personas trabajando detrás 💪\n\n'
+                'No somos una multinacional. Somos una empresa venezolana que desarrolla '
+                'sistemas de calidad a precios justos.\n\n'
+                '¿Sabes cuánto cuesta desarrollar un sistema como estos? Miles de dólares '
+                'en horas de ingeniería. Y te lo ofrecemos a $25 USD porque queremos que '
+                'los negocios venezolanos tengan acceso a herramientas profesionales.\n\n'
+                'Lo que sí puedo ofrecerte gratis es:\n'
+                '🎥 *Demo en vivo* — ves todo funcionando sin pagar un centavo\n'
+                '💬 *Asesoría* — te ayudo a elegir la app correcta sin compromiso\n'
+                '📊 *Información* — todos los detalles que necesites para decidir\n\n'
+                '¿Vale la pena al menos ver la demo? Te prometo que te va a sorprender lo que '
+                'ofrecemos por $25 😊'
+            ),
+        ],
+    },
+}
+
+# ==================== PHASE 5: CLOSING ====================
+
+CIERRES = [
+    (
+        '¡Excelente decisión! 🎉 Ese es el espíritu 💪\n\n'
+        'El proceso de compra es súper rápido:\n\n'
+        '1️⃣ Haz clic en "Comprar por WhatsApp" aquí abajo\n'
+        '2️⃣ El ingeniero Abigail te atiende al toque\n'
+        '3️⃣ Te da los datos de pago de tu preferencia\n'
+        '4️⃣ Haces el pago y recibes tu licencia\n\n'
+        'Todo en menos de 30 minutos ⏱️\n\n'
+        '¿Listo/a? 👇'
+    ),
+    (
+        '¡Me encanta tu decisión! 😍 Vamos a cerrar esto 💪\n\n'
+        'Solo necesitas hacer clic en el botón de WhatsApp aquí abajo. '
+        'El ingeniero te atiende directamente y te guía en todo.\n\n'
+        'Después de comprar:\n'
+        '✅ Recibes tu licencia inmediata\n'
+        '✅ El ingeniero te instala y configura todo\n'
+        '✅ Tienes soporte de por vida\n\n'
+        'Tu negocio va a dar un salto gigante. ¡Vamos! 🚀\n\n'
+        '👇 Haz clic aquí:'
+    ),
+    (
+        '¡Esa es la actitud! 🔥 Nadie se arrepiente de invertir en su negocio.\n\n'
+        'Te conecto directamente con el ingeniero para que cierre la compra. '
+        'Es bien fácil: le escribes, eliges método de pago, haces el pago y listo.\n\n'
+        'Recuerda que después de comprar también puedes visitar nuestra tienda '
+        'para ver más productos:\n'
+        '🛒 [A2K Digital Studio]({store})\n\n'
+        '¡Vamos por ello! 👇'
+    ),
+    (
+        '¡Increíble! Te vas a llevar una herramienta que va a transformar tu negocio 💎\n\n'
+        'El proceso es directo y sin complicaciones:\n\n'
+        '📲 Escribe al ingeniero por WhatsApp\n'
+        '💳 Elige tu método de pago favorito\n'
+        '✅ Recibe tu licencia y configuración\n'
+        '🚀 Empieza a usar tu sistema hoy mismo\n\n'
+        'No esperes más. Cada día sin sistema es un día perdiendo dinero.\n\n'
+        '👇 Compra ahora:'
+    ),
+    (
+        '¡Perfecto! 🎯 Hacemos esto rápido porque sé que tienes un negocio que atender.\n\n'
+        'Solo haz clic en "Comprar por WhatsApp" y el ingeniero se encarga de todo. '
+        'Te da datos de pago, confirmas, y en minutos tienes tu sistema funcionando.\n\n'
+        'Visita nuestra tienda para más info:\n'
+        '🛒 [A2K Digital Studio]({store})\n\n'
+        '¿Vamos? 💪👇'
+    ),
+    (
+        '¡Me parece perfecto! 💯 Ya mismo te conecto con el ingeniero.\n\n'
+        'El proceso de compra es 100% transparente:\n'
+        '• Sin letra pequeña\n'
+        '• Sin costos ocultos\n'
+        '• Sin sorpresas\n\n'
+        'Solo pagas, recibes tu licencia y listo. Soporte incluido de por vida 🤝\n\n'
+        '¿Listo/a para el siguiente nivel? 👇'
+    ),
+    (
+        '¡Vamos! 🚀 No pierdas más tiempo. Cada minuto sin un sistema profesional '
+        'es un minuto donde tu competencia te gana terreno.\n\n'
+        'Haz clic abajo, habla con el ingeniero, y en menos de 30 minutos '
+        'tienes tu sistema funcionando. Así de fácil.\n\n'
+        '🛒 Tienda: [A2K Digital Studio]({store})\n\n'
+        '¡Mano arriba si estás listo! 👇'
+    ),
+    (
+        '¡Ya mismo! 🔥 Te lo prometo, es la mejor inversión que harás este año.\n\n'
+        'Compra por WhatsApp aquí abajo. El ingeniero te atiende inmediatamente.\n'
+        'Después de pagar, en minutos recibes todo:\n'
+        '• Licencia completa\n'
+        '• Configuración asistida\n'
+        '• Tutorial de uso\n'
+        '• Soporte de por vida\n\n'
+        'Tu negocio te lo va a agradecer. ¡Vamos! 👇'
+    ),
+]
+
+# ==================== OTHER RESPONSE VARIATIONS ====================
+
 PRICE_VARIATIONS = [
-    "Claro que sí, te paso los precios 📋\n\n💰 Todas nuestras aplicaciones tienen un precio especial de **$25 USD**.\n\n✅ Un solo pago, tuya para siempre\n✅ Sin mensualidades escondidas\n✅ Soporte técnico incluido\n\nSi necesitas terminal adicional son **$5 USD extra** por cada una.\n\n¿Te interesa alguna en particular?",
-    "Con gusto te cuento los precios 💰\n\n💡 El precio de cualquiera de nuestras apps es de **$25 USD**.\n\nEso incluye:\n• Licencia completa\n• Actualizaciones gratis\n• Soporte por WhatsApp\n• Un solo pago, sin suscripciones\n\nTerminal extra: **+$5 USD**\n\n¿Quieres ver el catálogo completo?",
-    "Te explico lo de los precios 🤓\n\nCada aplicación de A2K cuesta **$25 USD** y es un pago único.\n\nVamos, es una inversión que se paga sola 📈\n\nExtra por terminal: **$5 USD**\n\n¿Cuál te llama la atención?",
-    "¡Excelente pregunta! 💸 Te doy el panorama completo:\n\n🏷️ Cada app: **$25 USD** (pago único)\n➕ Terminal adicional: **$5 USD**\n\n¿Sabes lo mejor? No hay mensualidades, ni suscripciones, ni letras pequeñas. Pagas una vez y es tuya 🏆\n\n¿Cuál app te interesa?",
-    "Los precios son súper accesibles 🤑\n\n**$25 USD** por cualquier aplicación del catálogo. Eso es todo. Punto.\n\nIncluye soporte, actualizaciones y configuración. Comparado con otros sistemas que cobran mensualidades, somos la mejor opción del mercado 💯\n\n¿Te gustaría ver alguna app en detalle?",
-    "Mira, te lo resumo rápido porque se lo explico a todo el mundo 💡\n\n🔢 **$25 USD** = 1 app completa\n🔢 **$5 USD** = 1 terminal extra\n\nNada más. Sin letra pequeña. Sin sorpresas.\n\n¿Empezamos? 🚀",
-    "Aquí tienes la info de precios actualizada 📊\n\nCualquiera de nuestras 9 aplicaciones profesionales cuesta **$25 USD**.\n\n¿Por qué es una buena inversión? Porque automatizas procesos, reduces errores y ahorras horas de trabajo manual. Se paga sola en el primer mes 💪\n\n¿Quieres que te muestre el catálogo?",
-    "Te cuento sin rodeos 🎯\n\n**$25 USD** por app. **$5 USD** por terminal extra. Un solo pago.\n\nMientras otras plataformas te cobran $30-50 al MES, nosotros te damos el sistema completo para siempre por un solo pago de $25. Haces la matemática 🧮\n\n¿Listo para dar el paso?",
+    "Te cuento los precios 💰\n\nTodas nuestras aplicaciones cuestan **$25 USD**. Un solo pago. Para siempre.\n\n✅ Sin mensualidades\n✅ Sin suscripciones\n✅ Soporte incluido\n✅ Actualizaciones gratis\n\nTerminal adicional: +$5 USD\n\n🛒 *Tienda:* {store}\n\n¿Te interesa alguna en particular?".format(store=STORE_URL),
+    "¡Excelente pregunta! 💸\n\nCualquiera de nuestras 9 apps: **$25 USD** (pago único)\nTerminal extra: **+$5 USD**\n\nCompara: otros sistemas cobran $30-50 al MES. Nosotros, una vez. Punto.\n\n🛒 *Tienda:* {store}\n\n¿Cuál te llama la atención?".format(store=STORE_URL),
+    "Los precios son súper accesibles 🤑\n\n**$25 USD** por cualquier app. Eso es todo.\n\nIncluye licencia, soporte, actualizaciones y configuración.\n\n🛒 *Ver todos los productos:* {store}\n\n¿Empezamos? 🚀".format(store=STORE_URL),
+    "Te lo resumo rápido 💡\n\n🔢 **$25 USD** = 1 app completa\n🔢 **$5 USD** = 1 terminal extra\n\nNada más. Sin letra pequeña. Sin sorpresas.\n\n🛒 *Tienda Online:* {store}\n\n¿Listo para invertir en tu negocio?".format(store=STORE_URL),
+    "Aquí tienes los precios 📊\n\nTodas las apps: **$25 USD**\nExtra por terminal: **$5 USD**\n\nSe paga sola en el primer mes. Más de 50 negocios lo confirman 💪\n\n🛒 *Tienda:* {store}\n\n¿Quieres ver alguna app?".format(store=STORE_URL),
 ]
 
 THANK_YOU_VARIATIONS = [
-    "¡De nada! Para eso estamos 😊 Si necesitas algo más, aquí andamos. ¡Éxitos con tu negocio!",
-    "Un placer ayudarte! 👍 No dudes en escribirme cuando quieras. Estoy disponible 24/7.",
-    "¡Igualmente! Qué gusto atenderte ✨ Recuerda que puedes escribirme cuando necesites. ¡Buen día!",
-    "¡No hay de qué! 🙏 Me alegra poder ayudarte. Si surge alguna duda, ya sabes dónde encontrarme.",
-    "¡Con mucho gusto! 😄 Espero verte pronto. Ah, y no olvides visitar nuestra tienda online. ¡Abrazo!",
-    "¡Para servirte! 🫡 Aquí me tienes cuando me necesites. No dudes en volver, la puerta siempre está abierta.",
-    "¡A la orden! 😊 Fue un placer atenderte. Si surge alguna inquietud, me escribes y listo.",
-    "¡Gracias a ti por confiar en nosotros! 💪 No dudes en volver cuando quieras. ¡Aquí seguimos!",
-    "¡No hay problema! Se me hace un gusto 👏 Cualquier cosa que necesites, me avisas y con gusto te ayudo.",
-    "¡De peluche! 😄 Ah no wait, ¡de nada! Jajaja, en serio, cualquier cosa me escribes. ¡Éxitos!",
-]
-
-PURCHASE_VARIATIONS = [
-    "¡Excelente decisión! 🎉 Te guío para que puedas adquirir tu aplicación:\n\n1️⃣ Haz clic en el botón de abajo para ir a WhatsApp\n2️⃣ El ingeniero Abigail te atenderá personalmente\n3️⃣ Te comparte los datos de pago\n4️⃣ Haces el pago y ¡listo! Te entrega tu licencia\n\nEs súper rápido, te lo prometo 💪",
-    "¡Qué buena elección! 😍 Vamos a hacer esto fácil para ti:\n\n👇 Dale al botón de \"Comprar por WhatsApp\" y el ingeniero se encarga de todo. Te orienta paso a paso, te da los datos de pago y en poco tiempo tienes tu sistema funcionando.\n\n¿Listo para automatizar tu negocio? 💼",
-    "¡Me parece perfecto! 🔥 Comprar es muy sencillo:\n\nSolo necesitas contactarnos por WhatsApp. El ingeniero Abigail te atiende directamente y te guía con todo el proceso.\n\nNo te preocupes, somos 100% confiables ✅",
-    "¡Vamos por ello! 🚀 Comprar en A2K es pan comido:\n\n1. Clic en el botón de WhatsApp\n2. El ingeniero te atiende al toque\n3. Te da los datos de pago\n4. Haces el pago y recibes tu licencia\n\nTodo en cuestión de minutos ⏱️",
-    "¡Me encanta tu determinación! 💯 Mira, el proceso es bien sencillo:\n\n📲 Escribe al ingeniero Abigail por WhatsApp\n💳 Elige tu método de pago favorito\n✅ Recibe tu licencia y configuración\n\n¡Así de fácil! ¿Qué esperas? 👇",
-    "¡Esa es la actitud! 🎯 Nadie se arrepiente de invertir en su negocio.\n\nEl proceso de compra es directo y transparente. Solo haz clic en el botón de abajo, habla con el ingeniero y listo.\n\nSoporte incluido de por vida 🤝",
-    "¡Increíble! Te vas a llevar una herramienta que va a transformar tu negocio 💎\n\nSolo necesitas contactar por WhatsApp, hacer el pago y listo. El ingeniero Abigail te instala y configura todo.\n\n¿Listo/a para el siguiente nivel? 👇",
-    "¡Ya mismo! 🔥 Te conecto con el ingeniero para que cierre la compra. Es rapidísimo, te lo aseguro.\n\nUna vez que pagues, en minutos tienes tu sistema funcionando. Así de fácil es trabajar con A2K ✅",
-]
-
-UNKNOWN_VARIATIONS = [
-    "Mm, no estoy seguro de entender bien lo que dices 🤔 Pero no te preocupes, déjame ayudarte.\n\nAquí en A2K Digital Studio creamos sistemas profesionales para negocios. Puedo mostrarte nuestro catálogo, precios, o ayudarte a comprar.\n\n¿Qué te gustaría ver?",
-    "Jeje, creo que necesito un poco más de contexto 😅 Pero tranquilo, para eso estoy.\n\nTe cuento rápido: tenemos 9 aplicaciones de gestión para diferentes negocios, todas a $25 USD.\n\n¿Quieres que te muestre el catálogo? 👇",
-    "Ajá, entiendo... o creo que sí 😄 Mira, lo mejor es que te muestre las opciones que tenemos disponibles.\n\nTenemos sistemas para barberías, ferreterías, bodegas, farmacias y más.\n\nDime, ¿qué tipo de negocio tienes? Así te recomiendo la app ideal 💡",
-    "Mmm, déjame ver si entiendo bien 🧐 Creo que lo mejor es empezar por el catálogo.\n\nEn A2K Digital Studio tenemos 9 apps para automatizar negocios. ¿Te gustaría echarles un vistazo?\n\n¡Son solo $25 USD cada una! 🏷️",
-    "Oye, no te preocupes si no sabes por dónde empezar 😎 Yo te guío.\n\nLo primero: ¿tienes un negocio? Si me dices qué tipo, te recomiendo la app perfecta para ti.\n\nO si prefieres, puedes ver todo el catálogo y decidir tú mismo/a 👇",
-    "Vaya, eso es nuevo para mí 🤓 Pero hey, estoy aquí para aprender contigo.\n\nLo que sí sé es que tenemos las mejores apps de gestión del mercado. Dime qué necesitas y vemos cómo te puedo ayudar 💪",
-    "No tengo la respuesta exacta a eso, pero tengo algo mejor 😏: 9 aplicaciones que pueden cambiar la forma en que manejas tu negocio.\n\n¿Me cuentas un poco sobre lo que haces y te recomiendo la ideal? 🎯",
-    "Jajaja, me has pillado 🙈 A ver, vamos a empezar de cero.\n\n¿Quieres ver aplicaciones, precios, demos, o prefieres que te ayude a elegir la mejor para tu negocio? Tú dime y yo me adapto 🦾",
-]
-
-FOLLOW_UP_VARIATIONS = [
-    "Por cierto, ¿sabías que también tenemos otras aplicaciones que podrían interesarte? 🤔",
-    "Oye, y no olvides que puedes probar antes de comprar con nuestra demo en vivo 🎥",
-    "Ah, y si necesitas algo personalizado, el ingeniero Abigail siempre está disponible por WhatsApp 💬",
-    "Tip: muchas veces combinar dos aplicaciones da mejores resultados. Por ejemplo, Bodega Descarga Pro + Farmacia Pro Plus 💡",
-    "Dato curioso: el 90% de nuestros clientes dice que la app se pagó sola en el primer mes 📈",
-    "Recuerda que ofrecemos soporte técnico de por vida con cada compra 🛠️",
-    "¿Sabías que puedes tener múltiples terminales por solo $5 USD extra cada una? Ideal si tienes varios puntos de venta 🏪",
-    "Oye, si compras ahora te incluimos configuración asistida gratis. El ingeniero te instala todo paso a paso 🔧",
-]
-
-SELLING_FOLLOW_UP_VARIATIONS = [
-    "Por cierto, esta app se paga sola en el primer mes 💡 Muchos de nuestros clientes recuperan la inversión rápidamente.",
-    "¿Sabías que puedes probarla antes de comprar? Solicita una demo gratis 🎥",
-    "Oye, si decides comprar ahora mismo, el ingeniero te da soporte prioritario 🚀",
-    "Dato real: nuestros clientes ahorran un promedio de 15 horas semanales con nuestras apps ⏰",
-    "Esta es una de nuestras apps más vendidas. ¡La gente la ama! ⭐⭐⭐⭐⭐",
-    "Piénsalo así: son $25 USD una sola vez vs. las horas que pierdes haciendo todo manual. La matemática es clara 📊",
-    "No te quedes con la duda. Muchos negocios como el tuyo ya están automatizados con esta app. ¡Únete! 🔥",
-    "Si compras hoy, puedes estar funcionando con el sistema en menos de 30 minutos. En serio ⚡",
+    "¡De nada! Para eso estamos 😊 No dudes en volver cuando quieras.\n\n🛒 *Tienda A2K:* {store}".format(store=STORE_URL),
+    "¡Con mucho gusto! 😄 Fue un placer ayudarte. Recuerda que puedes visitar nuestra tienda cuando quieras.\n\n🛒 *Tienda:* {store}".format(store=STORE_URL),
+    "¡Un placer! 👍 No dudes en escribirme. Estoy aquí 24/7.\n\n🛒 *Tienda A2K Digital Studio:* {store}".format(store=STORE_URL),
+    "¡Para servirte! 🫡 Si necesitas algo más, me escribes. Ah, y no olvides visitar nuestra tienda online 💪\n\n🛒 *Tienda:* {store}".format(store=STORE_URL),
+    "¡Gracias a ti por confiar en A2K! 💪 Estaré por aquí cuando me necesites.\n\n🛒 *Tienda Online:* {store}".format(store=STORE_URL),
+    "¡No hay de qué! 🙏 Me alegra poder ayudarte. Visita nuestra tienda para ver más productos.\n\n🛒 *Tienda:* {store}".format(store=STORE_URL),
 ]
 
 GOODBYE_VARIATIONS = [
-    "¡Hasta luego! 👋 Fue un gusto atenderte. No dudes en volver cuando quieras. ¡Mucho éxito!",
-    "¡Nos vemos! 😊 Espero haberte ayudado. Estaré por aquí cuando me necesites. ¡Cuidate!",
-    "¡Chao, parche! 🤙 Un placer. Vuelve cuando quieras, la puerta está abierta. ¡Éxitos!",
-    "¡Hasta la próxima! 👋 Que te vaya súper bien. Acuérdate que aquí andamos para lo que necesites ✨",
-    "¡Nos pillemos luego! 😄 Fue un gusto. No olvides que puedes escribirme a cualquier hora. ¡Abrazo!",
-    "¡Hasta pronto! 🙌 Me da gusto haberte atendido. Vuelve cuando quieras, estaré esperándote.",
-    "¡Cuídate mucho! 👋 Espero verte de nuevo por acá. ¡Mucho éxito con tu negocio! 💼",
-    "¡Bye bye! 👋 Que tengas un día increíble. Recuerda: A2K Digital Studio siempre está aquí para ti 🏆",
+    "¡Hasta luego! 👋 Fue un gusto. No dudes en volver. ¡Mucho éxito!\n\n🛒 *Tienda A2K:* {store}".format(store=STORE_URL),
+    "¡Chao, parche! 🤙 Un placer. Vuelve cuando quieras. ¡Éxitos!\n\n🛒 *Tienda:* {store}".format(store=STORE_URL),
+    "¡Nos pillemos luego! 😄 No olvides visitar nuestra tienda online.\n\n🛒 *Tienda:* {store}".format(store=STORE_URL),
+    "¡Hasta pronto! 🙌 Que te vaya súper bien. Acuérdate que aquí andamos.\n\n🛒 *Tienda A2K:* {store}".format(store=STORE_URL),
+    "¡Cuídate mucho! 👋 ¡Mucho éxito con tu negocio! 💼\n\n🛒 *Tienda Online:* {store}".format(store=STORE_URL),
+    "¡Bye bye! 👋 Recuerda: A2K Digital Studio siempre está aquí para ti 🏆\n\n🛒 *Tienda:* {store}".format(store=STORE_URL),
+]
+
+UNKNOWN_VARIATIONS = [
+    "Mm, no estoy segura de entender bien 🤔 Pero no te preocupes, cuéntame: ¿tienes un negocio? Si me dices qué tipo, te recomiendo la app perfecta 💡\n\n🛒 *Tienda A2K:* {store}".format(store=STORE_URL),
+    "Jeje, creo que necesito un poco más de contexto 😅 Pero tranquilo, para eso estoy. Tenemos 9 apps para diferentes negocios. ¿Qué tipo de negocio tienes?\n\n🛒 *Tienda:* {store}".format(store=STORE_URL),
+    "Ajá, entiendo... o creo que sí 😄 Mira, lo mejor es que me cuentes qué tipo de negocio manejas y te asesoro. ¿O prefieres ver el catálogo completo?\n\n🛒 *Tienda Online:* {store}".format(store=STORE_URL),
+    "Vaya, eso es nuevo para mí 🤓 Pero hey, si tienes un negocio, tengo la herramienta ideal. ¿Me cuentas qué haces?\n\n🛒 *Tienda A2K:* {store}".format(store=STORE_URL),
+    "Jajaja, me has pillado 🙈 A ver, empecemos de nuevo. ¿Tienes un negocio? Si me dices el rubro, te consigo la solución ideal.\n\n🛒 *Tienda:* {store}".format(store=STORE_URL),
 ]
 
 DEMO_VARIATIONS = [
-    "¡Buena idea! Probar antes de comprar siempre es lo mejor 🧪\n\nTe cuento cómo funciona:\n\n🎥 Puedes ver una demo en vivo por videollamada con el ingeniero Abigail. Te muestra el sistema funcionando, responde todas tus dudas y tú decides si es lo que necesitas.\n\n¡Sin compromiso! 👇",
-    "Me gusta que quieras verlo antes 🎯 Es la mejor forma de convencerte.\n\nTenemos demos disponibles para varias de nuestras apps. Solo escribe al ingeniero por WhatsApp y coordina una videollamada.\n\nTe aseguro que vas a quedar impresionado 😎👇",
-    "Perfecto, ¡vamos a agendar tu demo! 📅\n\nSolo tienes que contactar al ingeniero Abigail por WhatsApp. Él te programa una sesión en vivo donde ves el sistema en acción.\n\nTotalmente gratis y sin compromiso ✅👇",
-    "¡Genial! Ver para creer 🧐\n\nTenemos dos formas de ver la demo:\n\n1️⃣ Demo online (algunas apps la tienen)\n2️⃣ Demo en vivo por videollamada con el ingeniero\n\nAmbas son gratis y sin compromiso. ¿Cuál prefieres? 👇",
-    "¡Excelente iniciativa! 🌟 Los clientes que ven la demo antes de comprar están mucho más seguros de su decisión.\n\nTe conecto con el ingeniero para una videollamada personalizada. Te muestra todo, lo pruebas tú mismo y decides 👇",
-    "¡Me parece perfecto! 🔍 Una demo vale más que mil palabras.\n\nEl ingeniero Abigail te lleva de la mano, te muestra cada función y te responde todas las preguntas en vivo.\n\nSin presión, sin compromiso. Solo conocimiento 🧠👇",
-    "¡Así se habla! 👏 Ver antes de comprar es de personas inteligentes.\n\nAgenda tu demo ahora y sorpréndete con todo lo que nuestras apps pueden hacer por tu negocio 🚀👇",
-    "¡Me encanta tu criterio! 🎯 Probar es la clave.\n\nEn la demo verás exactamente cómo se vería tu sistema funcionando con tus datos reales. Es como tener la app antes de comprarla 👇",
+    "¡Buena idea! Probar antes de comprar siempre es lo mejor 🧪\n\nPuedes ver una demo en vivo por videollamada con el ingeniero Abigail. Te muestra todo funcionando y tú decides. ¡Sin compromiso!\n\n🛒 *Tienda:* {store}".format(store=STORE_URL),
+    "¡Genial! Ver para creer 🧐\n\nAgenda tu demo gratis por WhatsApp. El ingeniero te lleva de la mano y te muestra cada función.\n\n🛒 *Tienda A2K:* {store}".format(store=STORE_URL),
+    "¡Me parece perfecto! 🔍 Una demo vale más que mil palabras.\n\nEscribe al ingeniero por WhatsApp y coordina una videollamada. Totalmente gratis y sin compromiso.\n\n🛒 *Tienda:* {store}".format(store=STORE_URL),
+    "¡Así se habla! 👏 Ver antes de comprar es de personas inteligentes.\n\nAgenda tu demo ahora y sorpréndete con lo que nuestras apps pueden hacer 🚀\n\n🛒 *Tienda A2K:* {store}".format(store=STORE_URL),
 ]
 
-# Nuevas variaciones v4.0
-BUSINESS_TYPE_VARIATIONS = [
+FOLLOW_UP_SELLING = [
+    "Por cierto, esta app se paga sola en el primer mes 💡 Más de 50 negocios lo confirman.",
+    "¿Sabías que puedes probarla antes de comprar? Solicita una demo gratis 🎥",
+    "Dato real: nuestros clientes ahorran un promedio de 15 horas semanales ⏰",
+    "Esta es una de nuestras apps más vendidas. ¡La gente la ama! ⭐⭐⭐⭐⭐",
+    "Piénsalo así: son $25 USD una vez vs. horas que pierdes haciendo todo manual 📊",
+    "No te quedes con la duda. Muchos negocios como el tuyo ya están automatizados 🔥",
+    "Si compras hoy, puedes estar funcionando en menos de 30 minutos ⚡",
+    "🛒 *Tienda A2K Digital Studio:* {store}".format(store=STORE_URL),
+]
+
+# ==================== ADDITIONAL RESPONSE VARIATIONS ====================
+
+BUSINESS_TYPE_INTRO = [
     "¡Qué interesante! Parece que tienes un negocio de {tipo}. Déjame decirte que tenemos justo lo que necesitas 🎯",
     "¡Perfecto! Un negocio de {tipo} merece una herramienta profesional. Y adivina qué... ¡la tenemos! 😎",
     "¡Me encanta tu negocio de {tipo}! 🌟 Sabes qué, tengo la app ideal para ti. Déjame mostrarte...",
     "Un negocio de {tipo}, ¿eh? 💡 Conozco exactamente lo que necesitas para llevarlo al siguiente nivel.",
-    "¡Wow! Los negocios de {tipo} están creciendo mucho últimamente 📈. Y nosotros tenemos la herramienta perfecta para ayudarte.",
+    "¡Wow! Los negocios de {tipo} están creciendo mucho últimamente 📈. Y nosotros tenemos la herramienta perfecta.",
     "¡Genial! El sector de {tipo} es uno de nuestros fuertes. Te tengo una solución que te va a encantar 🤩",
     "¡Interesante! Un/a {tipo} necesita buen software de gestión. ¡Y yo tengo el mejor! 😏",
-    "¡Buenísimo! Si hay algo que me encanta es ayudar a negocios de {tipo}. ¡Tengo la app perfecta esperándote! 🏆",
+    "¡Buenísimo! Si hay algo que me encanta es ayudar a negocios de {tipo}. ¡Tengo la app perfecta! 🏆",
 ]
 
-RECOMMENDATION_VARIATIONS = [
-    "¡Tengo la app perfecta para tu {tipo}! 🎯",
-    "¡Esta es LA app que tu negocio de {tipo} necesita! 🔥",
-    "Déjame presentarte la solución ideal para {tipo} 💎",
-    "¡Bingo! Encontré la app perfecta para {tipo} 🎯",
-    "¡Tu búsqueda terminó aquí! La mejor app para {tipo} 🏆",
-    "¡Mírala! Esta app fue diseñada especialmente para {tipo} ✨",
-    "¡Aquí está! La herramienta definitiva para {tipo} 💪",
-    "¡Jackpot! Esta es exactamente la app que un negocio de {tipo} necesita 🎰",
+RETURNING_USER_UPSELL = [
+    "Oye, ya que estás de vuelta, ¿sabías que agregamos nuevas funciones a nuestras apps? 🆕",
+    "¡Bienvenido de nuevo! ¿Ya tienes algo en mente o quieres ver las novedades? 😊",
+    "Qué bueno verte otra vez. Si ya tienes una app nuestra, ¿quieres ver las actualizaciones? 🔄",
+    "Hey! De vuelta por aquí. ¿Necesitas otra app para tu negocio o hay algo más que pueda hacer por ti? 💪",
+    "Qué gusto! Ya te conozco, así que vamos directo al grano. ¿Qué necesitas? 🎯",
 ]
 
-PUSH_SALE_VARIATIONS = [
-    "Oye, si decides comprar ahora te puedo dar soporte prioritario 🚀",
-    "Eh, nada pierdes con preguntar. Y mucho ganar si decides comprar 💡",
-    "¿Sabías que los clientes que compran hoy mismo reciben configuración asistida gratis? 🔧",
-    "Un consejo de amigo: mientras más rápido actúes, más rápido vas a ver resultados 📈",
-    "Oye, solo $25 USD por una app que te va a ahorrar horas de trabajo todos los días. La verdad, es una ganga 💰",
-    "No te presiono, pero... bueno, un poquito sí 😄. En serio, esta inversión se paga sola. ¡Piénsalo! 🤔",
+STORE_REMINDER_MESSAGES = [
+    "\n\n💡 *Tip:* Visita nuestra tienda para ver todas las opciones:\n🛒 [A2K Digital Studio]({store})".format(store=STORE_URL),
+    "\n\n🛒 *Recuerda:* Puedes explorar todo en nuestra tienda online:\n[A2K Digital Studio]({store})".format(store=STORE_URL),
+    "\n\n📍 *Enlace de la tienda:* [A2K Digital Studio]({store})\nAllí encuentras todas las apps, descripciones y demos.".format(store=STORE_URL),
 ]
 
-# ==================== UTILIDADES ====================
+POST_SALE_MESSAGES = [
+    "¡Felicidades por tu compra! 🎉 Ahora tu negocio va a dar un salto gigante. Recuerda que tienes soporte incluido de por vida.\n\n"
+    "🛒 *Visita nuestra tienda* para ver más productos que podrían interesarte:\n"
+    "[A2K Digital Studio]({store})".format(store=STORE_URL),
+    "¡Bienvenido al club! 💎 Eres uno más de los +50 negocios que confían en A2K. El ingeniero te va a contactar para la configuración.\n\n"
+    "🛒 *Tienda:* [A2K Digital Studio]({store})".format(store=STORE_URL),
+    "¡Excelente elección! 🔥 Tu sistema está en camino. No olvides que tenemos soporte técnico de por vida.\n\n"
+    "🛒 *Mira otros productos:* [A2K Digital Studio]({store})".format(store=STORE_URL),
+]
+
+APPS_CROSS_SELL = {
+    'barberia': ['nail', 'ferreteria'],
+    'nail': ['barberia', 'farmacia'],
+    'repuestos': ['ferreteria', 'mercado_logic'],
+    'ferreteria': ['repuestos', 'mercado_logic'],
+    'bodega_descarga': ['bodega_cloud', 'mercado_logic'],
+    'mercado_logic': ['bodega_descarga', 'bodega_cloud'],
+    'farmacia': ['nail', 'mercado_logic'],
+    'fruteria': ['mercado_logic', 'bodega_descarga'],
+    'bodega_cloud': ['bodega_descarga', 'mercado_logic'],
+}
+
+CROSS_SELL_MESSAGES = [
+    "Oye, y no sabía si te interesa... también tenemos *{nombre}* {icono} que complementa perfecto a lo que viste 🤔",
+    "Por cierto, si te gustó lo que viste, deberías echarle un ojo a *{nombre}* {icono}. Muchos clientes tienen ambas apps 💡",
+    "Tip pro: combinar *{nombre}* {icono} con lo que viste te da control total de tu negocio. ¿Te interesa? 🔥",
+]
+
+# ==================== UTILITIES ====================
 
 def get_whatsapp_buy_url(app_nombre):
-    """Genera URL de WhatsApp para compra con mensaje pre-llenado."""
-    import urllib.parse
     msg = f'Quiero comprar {app_nombre} - A2K Digital Studio'
     encoded = urllib.parse.quote(msg)
     return f'https://wa.me/{WHATSAPP_CONTACT}?text={encoded}'
 
 def get_whatsapp_demo_url(app_nombre):
-    """Genera URL de WhatsApp para solicitar demo."""
-    import urllib.parse
     msg = f'Quiero ver la demo de {app_nombre} - A2K Digital Studio'
     encoded = urllib.parse.quote(msg)
     return f'https://wa.me/{WHATSAPP_CONTACT}?text={encoded}'
 
-def simulate_typing(chat_id, duration=1.5):
-    """Simula que el bot está escribiendo para sentirse más humano."""
-    bot.send_chat_action(chat_id, 'typing')
-    time.sleep(duration)
+def simulate_typing(chat_id, duration=None):
+    if duration is None:
+        duration = random.uniform(0.8, 2.0)
+    try:
+        bot.send_chat_action(chat_id, 'typing')
+        time.sleep(duration)
+    except Exception:
+        pass
+
+def smart_choice(options, user_id, category='default'):
+    """Elige una opción aleatoria evitando repetir la última."""
+    last = user_last_responses.get(f'{user_id}_{category}')
+    available = [o for o in options if o != last]
+    if not available:
+        available = options
+    choice = random.choice(available)
+    user_last_responses[f'{user_id}_{category}'] = choice
+    return choice
 
 def find_app_by_keywords(text):
-    """Busca una app por keywords en el texto del usuario."""
     text_lower = text.lower().strip()
     best_match = None
     best_score = 0
-
     for app in A2K_APPS:
         score = 0
         for kw in app['keywords']:
             if kw in text_lower:
-                score += len(kw)  # Prioriza matches más largos
-            # Also check partial matches for flexibility
+                score += len(kw)
             if kw in text_lower.replace(' ', ''):
                 score += len(kw) // 2
         if score > best_score:
             best_score = score
             best_match = app
-
-    # Only return if there's a meaningful match
     if best_score >= 3:
         return best_match
     return None
 
-# ==================== DETECCIÓN DE INTENCIONES (MEJORADA v4.0) ====================
+def recommend_app_for_business(text):
+    text_lower = text.lower()
+    best_match = None
+    best_type_name = None
+    best_score = 0
+
+    business_map = {
+        'barbería': {'app_id': 'barberia', 'tipo': 'barbería',
+                     'keywords': ['barbería', 'barberia', 'barbero', 'barber shop', 'corte de cabello']},
+        'nail': {'app_id': 'nail', 'tipo': 'nail studio / estética',
+                 'keywords': ['nail', 'uñas', 'manicura', 'pedicura', 'estética', 'estetica', 'salón de belleza', 'salon de belleza']},
+        'motos': {'app_id': 'repuestos', 'tipo': 'repuestos de motos',
+                  'keywords': ['motos', 'repuestos de motos', 'taller mecánico', 'taller mecanico', 'motocicleta']},
+        'ferretería': {'app_id': 'ferreteria', 'tipo': 'ferretería',
+                       'keywords': ['ferretería', 'ferreteria', 'herramientas', 'construcción', 'construccion']},
+        'bodega': {'app_id': 'bodega_descarga', 'tipo': 'bodega / abasto',
+                   'keywords': ['bodega', 'abasto', 'despensa', 'almacén', 'almacen', 'mayorista']},
+        'supermercado': {'app_id': 'mercado_logic', 'tipo': 'supermercado / mercado',
+                         'keywords': ['supermercado', 'mercado', 'industrial', 'autoservicio']},
+        'farmacia': {'app_id': 'farmacia', 'tipo': 'farmacia / droguería',
+                     'keywords': ['farmacia', 'droguería', 'drogueria', 'medicamentos']},
+        'frutería': {'app_id': 'fruteria', 'tipo': 'frutería / verdulería',
+                     'keywords': ['frutería', 'fruteria', 'frutas', 'verdulería', 'verduleria']},
+        'cloud': {'app_id': 'bodega_cloud', 'tipo': 'bodega en la nube',
+                  'keywords': ['cloud', 'nube', 'sincronizar', 'sincronización', 'sincronizacion', 'online']},
+    }
+
+    for category, info in business_map.items():
+        for kw in info['keywords']:
+            if kw in text_lower:
+                score = len(kw)
+                if score > best_score:
+                    best_score = score
+                    best_match = info['app_id']
+                    best_type_name = info['tipo']
+
+    if best_match:
+        app = next((a for a in A2K_APPS if a['id'] == best_match), None)
+        return app, best_type_name
+    return None, None
+
+def detect_objection(text):
+    """Detecta si el texto contiene una objeción. Returns (category, response) or (None, None)."""
+    text_lower = text.lower()
+    for category, data in OBJECIONES.items():
+        for trigger in data['triggers']:
+            if trigger in text_lower:
+                return category
+    return None
+
+# ==================== INTENT DETECTION ====================
 
 def is_greeting(text):
-    """Detecta si el texto es un saludo puro (solo saludo, sin más contexto)."""
     greetings = [
         'hola', 'buenas', 'hey', 'buen dia', 'buenos dias', 'buenas tardes',
         'buenas noches', 'saludos', 'qué tal', 'que tal', 'como estas',
-        'como andas', 'que hay', 'que hubo', 'epa', 'hello', 'hi', 'ey'
+        'como andas', 'que hay', 'que hubo', 'epa', 'hello', 'hi', 'ey',
+        'buenas tardess', 'que fue'
     ]
     text_lower = text.lower().strip()
     return any(g == text_lower or text_lower.startswith(g) for g in greetings)
 
 def is_price_question(text):
-    """Detecta si el usuario pregunta por precios (específico, sin superponerse con pagos)."""
     keywords = [
         'precio', 'cuanto cuesta', 'cuánto cuesta', 'cuanto vale', 'cuánto vale',
-        'costo', 'tarifa', 'cuanto es', 'cuánto es', 'dinero', 'valor',
-        'cuánto sale', 'cuanto sale'
+        'costo', 'tarifa', 'cuanto es', 'cuánto es', 'valor',
+        'cuánto sale', 'cuanto sale', 'cuanto cobran'
     ]
     text_lower = text.lower().strip()
     return any(k in text_lower for k in keywords)
 
 def is_demo_request(text):
-    """Detecta si el usuario pide una demo."""
     keywords = [
-        'demo', 'probar', 'prueba', 'ver como funciona', 'testear', 'vista previa',
-        'mostrar', 'ver el sistema', 'ensayar'
+        'demo', 'probar', 'prueba', 'ver como funciona', 'testear',
+        'mostrar', 'ver el sistema', 'ensayar', 'videollamada'
     ]
     text_lower = text.lower().strip()
     return any(k in text_lower for k in keywords)
 
 def is_purchase_intent(text):
-    """Detecta si el usuario quiere comprar (específico, sin falsos positivos)."""
     keywords = [
         'comprar', 'quiero comprar', 'deseo', 'adquirir', 'me llevo', 'lo quiero',
         'cómo compro', 'como compro', 'donde compro', 'dónde compro', 'compra',
-        'me interesa', 'oferta', 'quiero la', 'quiero el', 'quiero una'
+        'me interesa', 'oferta', 'quiero la', 'quiero el', 'quiero una',
+        'dame', 'voy a comprar', 'listo para', 'me la llevo', 'cierro'
     ]
     text_lower = text.lower().strip()
     return any(k in text_lower for k in keywords)
 
 def is_thank_you(text):
-    """Detecta si el usuario está agradeciendo (solo términos claros de agradecimiento)."""
     keywords = [
         'gracias', 'muchas gracias', 'agradecido', 'te lo agradesco',
-        'thanks', 'ty', 'thx', 'gracia', 'muy amable', 'eres un cracking',
-        'eres la zona', 'buen trabajo'
+        'thanks', 'ty', 'thx', 'gracia', 'muy amable'
     ]
     text_lower = text.lower().strip()
     return any(k in text_lower for k in keywords)
 
 def is_goodbye(text):
-    """Detecta si el usuario se despide."""
     keywords = [
         'adiós', 'adios', 'chao', 'chau', 'hasta luego', 'nos vemos',
-        'bye', 'me voy', 'hasta pronto', 'suerte'
+        'bye', 'me voy', 'hasta pronto', 'suerte', 'hasta mañana'
     ]
     text_lower = text.lower().strip()
     return any(k in text_lower for k in keywords)
 
 def is_contact_request(text):
-    """Detecta si el usuario pide contacto."""
     keywords = [
         'contacto', 'contactar', 'teléfono', 'telefono', 'whatsapp',
         'hablar', 'escribir', 'comunicar', 'ingeniero', 'abigail'
@@ -613,7 +1505,6 @@ def is_contact_request(text):
     return any(k in text_lower for k in keywords)
 
 def is_payment_request(text):
-    """Detecta si el usuario pregunta por métodos de pago (prioridad sobre precio)."""
     keywords = [
         'pago', 'pagar', 'pagos', 'banco', 'bancos', 'transferencia',
         'deposito', 'depósito', 'zelle', 'paypal', 'método', 'metodo',
@@ -625,123 +1516,45 @@ def is_payment_request(text):
     return any(k in text_lower for k in keywords)
 
 def is_store_request(text):
-    """Detecta si el usuario pide la tienda."""
-    keywords = [
-        'tienda', 'store', 'página', 'pagina', 'web', 'link', 'enlace',
-        'sitio'
-    ]
+    keywords = ['tienda', 'store', 'página', 'pagina', 'web', 'link', 'enlace', 'sitio']
     text_lower = text.lower().strip()
     return any(k in text_lower for k in keywords)
 
 def is_business_description(text):
-    """Detecta si el usuario describe su tipo de negocio."""
     keywords = [
         'tengo un negocio', 'tengo una', 'mi negocio', 'tengo un',
         'soy dueño', 'soy dueña', 'tengo mi', 'negocio de',
         'trabajo en un', 'trabajo en una', 'vendo', 'vende',
         'manejo un', 'manejo una', 'tengo una bodega', 'tengo una ferretería',
-        'tengo una barbería', 'tengo un salón', 'tengo una farmacia'
+        'tengo una barbería', 'tengo un salón', 'tengo una farmacia',
+        'tengo una frutería', 'tengo un taller', 'mi tienda', 'mi local'
     ]
     text_lower = text.lower().strip()
     return any(k in text_lower for k in keywords)
 
-# ==================== MOTOR DE RECOMENDACIÓN DE NEGOCIOS ====================
-
-BUSINESS_TYPE_MAP = {
-    'barbería': {
-        'app_id': 'barberia',
-        'tipo': 'barbería',
-        'keywords': ['barbería', 'barberia', 'barbero', 'barber shop', 'corte de cabello']
-    },
-    'nail': {
-        'app_id': 'nail',
-        'tipo': 'nail studio / estética',
-        'keywords': ['nail', 'uñas', 'manicura', 'pedicura', 'estética', 'estetica', 'salón de belleza', 'salon de belleza']
-    },
-    'motos': {
-        'app_id': 'repuestos',
-        'tipo': 'repuestos de motos',
-        'keywords': ['motos', 'repuestos de motos', 'taller mecánico', 'taller mecanico', 'motocicleta']
-    },
-    'ferretería': {
-        'app_id': 'ferreteria',
-        'tipo': 'ferretería',
-        'keywords': ['ferretería', 'ferreteria', 'herramientas', 'construcción', 'construccion']
-    },
-    'bodega': {
-        'app_id': 'bodega_descarga',
-        'tipo': 'bodega / abasto',
-        'keywords': ['bodega', 'abasto', 'despensa', 'almacén', 'almacen', 'mayorista']
-    },
-    'supermercado': {
-        'app_id': 'mercado_logic',
-        'tipo': 'supermercado / mercado',
-        'keywords': ['supermercado', 'mercado', 'industrial', 'autoservicio']
-    },
-    'farmacia': {
-        'app_id': 'farmacia',
-        'tipo': 'farmacia / droguería',
-        'keywords': ['farmacia', 'droguería', 'drogueria', 'medicamentos']
-    },
-    'frutería': {
-        'app_id': 'fruteria',
-        'tipo': 'frutería / verdulería',
-        'keywords': ['frutería', 'fruteria', 'frutas', 'verdulería', 'verduleria']
-    },
-    'cloud': {
-        'app_id': 'bodega_cloud',
-        'tipo': 'bodega en la nube',
-        'keywords': ['cloud', 'nube', 'sincronizar', 'sincronización', 'sincronizacion', 'online']
-    },
-}
-
-def recommend_app_for_business(text):
-    """Detecta el tipo de negocio del usuario y recomienda la app ideal.
-    
-    Returns (app, business_type_name) or (None, None) si no detecta negocio.
-    """
-    text_lower = text.lower()
-    
-    best_match = None
-    best_type_name = None
-    best_score = 0
-    
-    for category, info in BUSINESS_TYPE_MAP.items():
-        for kw in info['keywords']:
-            if kw in text_lower:
-                score = len(kw)
-                if score > best_score:
-                    best_score = score
-                    best_match = info['app_id']
-                    best_type_name = info['tipo']
-    
-    if best_match:
-        app = next((a for a in A2K_APPS if a['id'] == best_match), None)
-        return app, best_type_name
-    
-    return None, None
-
 # ==================== KEYBOARDS ====================
 
 def get_main_menu_keyboard():
-    """Teclado principal persistente."""
+    """Teclado principal persistente con tienda prominente."""
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(
         types.KeyboardButton('📋 Catálogo A2K'),
-        types.KeyboardButton('💰 Precios'),
+        types.KeyboardButton('🛒 Tienda Online'),
     )
     markup.add(
-        types.KeyboardButton('🎥 Ver Demo'),
+        types.KeyboardButton('💰 Precios'),
         types.KeyboardButton('💳 Métodos de Pago'),
     )
     markup.add(
+        types.KeyboardButton('🎥 Ver Demo'),
         types.KeyboardButton('🛒 Otros Productos'),
+    )
+    markup.add(
         types.KeyboardButton('👤 Contacto'),
     )
     return markup
 
 def get_catalog_inline_keyboard():
-    """Teclado inline del catálogo principal."""
     markup = types.InlineKeyboardMarkup(row_width=3)
     for app in A2K_APPS:
         markup.add(types.InlineKeyboardButton(
@@ -749,214 +1562,149 @@ def get_catalog_inline_keyboard():
             callback_data=f"app_{app['id']}"
         ))
     markup.add(
-        types.InlineKeyboardButton('🏪 Tienda Online', url=STORE_URL),
+        types.InlineKeyboardButton('🛒 Tienda Online', url=STORE_URL),
         types.InlineKeyboardButton('💳 Ver Pagos', callback_data='pagos'),
     )
     markup.add(types.InlineKeyboardButton('🔙 Volver al Menú', callback_data='main_menu'))
     return markup
 
 def get_app_detail_keyboard(app):
-    """Teclado inline para detalle de una app específica."""
     markup = types.InlineKeyboardMarkup(row_width=2)
     if app.get('demo'):
         markup.add(types.InlineKeyboardButton(
             '🎥 Ver Demo en Vivo',
             callback_data=f'demo_{app["id"]}'
         ))
-    # Botones específicos para Bodega Descarga Pro y Mercado Logic Pro
     if app['id'] in ('bodega_descarga', 'mercado_logic'):
         markup.add(
-            types.InlineKeyboardButton(
-                '📋 Solicitar Demo Bodega Pro',
-                url=BODEGA_PRO_DEMO_URL
-            ),
-            types.InlineKeyboardButton(
-                '📄 Licencia Bodega Pro',
-                url=BODEGA_PRO_LICENCIA_URL
-            ),
+            types.InlineKeyboardButton('📋 Demo Bodega Pro', url=BODEGA_PRO_DEMO_URL),
+            types.InlineKeyboardButton('📄 Licencia Bodega Pro', url=BODEGA_PRO_LICENCIA_URL),
         )
     markup.add(
-        types.InlineKeyboardButton(
-            '💬 Comprar por WhatsApp',
-            url=get_whatsapp_buy_url(app['nombre'])
-        ),
-        types.InlineKeyboardButton(
-            '🎬 Solicitar Demo',
-            url=get_whatsapp_demo_url(app['nombre'])
-        ),
+        types.InlineKeyboardButton('💬 Comprar por WhatsApp', url=get_whatsapp_buy_url(app['nombre'])),
+        types.InlineKeyboardButton('🎬 Solicitar Demo', url=get_whatsapp_demo_url(app['nombre'])),
     )
+    markup.add(types.InlineKeyboardButton('🛒 Ver en Tienda', url=STORE_URL))
     markup.add(types.InlineKeyboardButton('📋 Catálogo Completo', callback_data='catalog'))
     markup.add(types.InlineKeyboardButton('🔙 Volver al Menú', callback_data='main_menu'))
     return markup
 
-def get_suggested_apps_keyboard(current_app_id, count=2):
-    """Sugiere apps relacionadas."""
-    related_map = {
-        'barberia': ['nail', 'ferreteria'],
-        'nail': ['barberia', 'farmacia'],
-        'repuestos': ['ferreteria', 'mercado_logic'],
-        'ferreteria': ['repuestos', 'mercado_logic'],
-        'bodega_descarga': ['bodega_cloud', 'mercado_logic'],
-        'mercado_logic': ['bodega_descarga', 'bodega_cloud'],
-        'farmacia': ['nail', 'mercado_logic'],
-        'fruteria': ['mercado_logic', 'bodega_descarga'],
-        'bodega_cloud': ['bodega_descarga', 'mercado_logic'],
-    }
-    suggested_ids = related_map.get(current_app_id, ['bodega_descarga', 'mercado_logic'])[:count]
+def get_store_inline_keyboard():
     markup = types.InlineKeyboardMarkup(row_width=2)
-    for sid in suggested_ids:
-        app = next((a for a in A2K_APPS if a['id'] == sid), None)
-        if app:
-            markup.add(types.InlineKeyboardButton(
-                f"➡️ {app['icono']} {app['nombre']}",
-                callback_data=f'app_{app["id"]}'
-            ))
-    markup.add(types.InlineKeyboardButton('📋 Todo el Catálogo', callback_data='catalog'))
+    markup.add(
+        types.InlineKeyboardButton('🛒 Abrir Tienda Online', url=STORE_URL),
+        types.InlineKeyboardButton('💬 WhatsApp', url=f'https://wa.me/{WHATSAPP_CONTACT}'),
+    )
+    markup.add(types.InlineKeyboardButton('📋 Ver Catálogo', callback_data='catalog'))
+    markup.add(types.InlineKeyboardButton('🔙 Volver al Menú', callback_data='main_menu'))
     return markup
 
-# ==================== MENSAJES ====================
-
-def build_welcome_message(first_name=None):
-    """Construye el mensaje de bienvenida personalizado."""
-    name = first_name or "amigo/a"
-    return (
-        "✨ *A2K Digital Studio*\n"
-        "━ *Soluciones Tecnológicas para tu Negocio*\n\n"
-        f"¡Hola {name}! 👋 Bienvenido al asistente virtual de A2K Digital Studio.\n\n"
-        "Somos especialistas en crear sistemas de gestión profesional para todo tipo de negocios. "
-        "Desde barberías hasta supermercados, tenemos la solución ideal para ti.\n\n"
-        "📌 *¿Qué ofrecemos?*\n"
-        "• 9 aplicaciones profesionales\n"
-        "• Precio único: $25 USD por app\n"
-        "• Un solo pago, sin mensualidades\n"
-        "• Soporte técnico incluido\n"
-        "• Demo en vivo gratis\n\n"
-        "🛒 *Tienda Online:* {store}\n\n"
-        "Selecciona una opción del menú o simplemente dime qué tipo de negocio tienes y te recomiendo la app perfecta 😊"
-    ).format(store=STORE_URL)
-
-def build_catalog_message():
-    """Construye el mensaje del catálogo completo."""
-    apps_list = ""
-    for i, app in enumerate(A2K_APPS, 1):
-        apps_list += (
-            f"\n{i}. {app['icono']} *{app['nombre']}*\n"
-            f"   _{app['desc_corta']}_\n"
+def get_purchase_inline_keyboard(app=None):
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    if app:
+        markup.add(
+            types.InlineKeyboardButton(f'💬 Comprar {app["nombre"]}', url=get_whatsapp_buy_url(app['nombre'])),
+            types.InlineKeyboardButton('🎬 Ver Demo', url=get_whatsapp_demo_url(app['nombre'])),
         )
+    else:
+        markup.add(
+            types.InlineKeyboardButton('💬 Comprar por WhatsApp', url=f'https://wa.me/{WHATSAPP_CONTACT}?text=Quiero%20comprar%20una%20app%20A2K'),
+        )
+    markup.add(types.InlineKeyboardButton('🛒 Tienda Online', url=STORE_URL))
+    markup.add(types.InlineKeyboardButton('📋 Catálogo', callback_data='catalog'))
+    return markup
 
-    return (
-        "🛒 *CATÁLOGO COMPLETO - A2K Digital Studio*\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"{apps_list}\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "💰 *Precio: $25 USD* cada aplicación\n"
-        "➕ Terminal adicional: +$5 USD\n"
-        "✅ Un solo pago | Sin mensualidades\n\n"
-        "🛒 *Tienda:* {store}\n\n"
-        "👇 Toca cualquier app para ver más detalles:"
-    ).format(store=STORE_URL)
+def get_demo_inline_keyboard():
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        types.InlineKeyboardButton('🎬 Solicitar Demo por WhatsApp', url=f'https://wa.me/{WHATSAPP_CONTACT}?text=Quiero%20ver%20una%20demo%20A2K'),
+    )
+    markup.add(types.InlineKeyboardButton('🛒 Tienda Online', url=STORE_URL))
+    markup.add(types.InlineKeyboardButton('📋 Ver Catálogo', callback_data='catalog'))
+    return markup
+
+# ==================== MESSAGE BUILDERS ====================
+
+STORE_FOOTER = "\n\n🛒 *Tienda Online:* [A2K Digital Studio]({store})".format(store=STORE_URL)
 
 def build_app_detail_message(app):
-    """Construye el mensaje de detalle de una app."""
     features = "\n".join(f"   {f}" for f in app['caracteristicas'])
-
     demo_line = ""
     if app.get('demo'):
-        demo_line = f"\n🎥 *Demo:* [Ver demo online]({app['demo']})\n"
-
-    # Bodega Pro links adicionales
+        demo_line = f"\n🎥 *Demo:* [Ver demo online]({app['demo']})"
     bodega_links = ""
     if app['id'] in ('bodega_descarga', 'mercado_logic'):
         bodega_links = (
-            f"\n📋 *Demo Bodega Pro:* [Solicitar Demo]({BODEGA_PRO_DEMO_URL})\n"
-            f"📄 *Licencia Bodega Pro:* [Obtener Licencia]({BODEGA_PRO_LICENCIA_URL})\n"
+            f"\n📋 *Demo Bodega Pro:* [Solicitar]({BODEGA_PRO_DEMO_URL})\n"
+            f"📄 *Licencia Bodega Pro:* [Obtener]({BODEGA_PRO_LICENCIA_URL})"
         )
-
     return (
         "━━━━━━━━━━━━━━━━━━━━━━━\n"
         "{icono} *{nombre}*\n"
         "━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         "{desc_larga}\n\n"
-        "✨ *Características principales:*\n"
+        "✨ *Características:*\n"
         "{features}\n"
         "━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "💰 *Precio: ${precio} USD*\n"
-        "➕ Terminal extra: +$5 USD\n"
+        "💰 *Precio: ${precio} USD* | ➕ Terminal: +$5\n"
         "✅ Un solo pago | Soporte incluido"
-        "{demo_line}"
-        "{bodega_links}\n"
-        "👇 ¿Qué quieres hacer?"
+        "{demo_line}{bodega_links}\n\n"
+        "🛒 *Ver en tienda:* [A2K Digital Studio]({store})"
     ).format(
-        icono=app['icono'],
-        nombre=app['nombre'],
-        desc_larga=app['desc_larga'],
-        features=features,
-        precio=app['precio'],
-        demo_line=demo_line,
-        bodega_links=bodega_links,
+        icono=app['icono'], nombre=app['nombre'],
+        desc_larga=app['desc_larga'], features=features,
+        precio=app['precio'], demo_line=demo_line,
+        bodega_links=bodega_links, store=STORE_URL
     )
 
+def build_catalog_message():
+    apps_list = ""
+    for i, app in enumerate(A2K_APPS, 1):
+        apps_list += f"\n{i}. {app['icono']} *{app['nombre']}*\n   _{app['desc_corta']}_\n"
+    return (
+        "🛒 *CATÁLOGO COMPLETO - A2K Digital Studio*\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"{apps_list}\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "💰 *Precio: $25 USD* | ➕ Terminal: +$5\n"
+        "✅ Un solo pago | Sin mensualidades\n\n"
+        "🛒 *Tienda:* [A2K Digital Studio]({store})\n\n"
+        "👇 Toca cualquier app para ver más:"
+    ).format(store=STORE_URL)
+
 def build_pricing_message():
-    """Construye el mensaje de precios."""
     return (
         "💰 *PLANES Y PRECIOS - A2K Digital Studio*\n"
         "━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🏷️ *Plan Estándar:*\n"
-        "   • 1 licencia por aplicación: **$25 USD**\n"
-        "   • Soporte por WhatsApp\n"
-        "   • Actualizaciones gratis\n"
-        "   • Un solo pago, tuya para siempre\n\n"
-        "➕ *Terminal Adicional:*\n"
-        "   • Cada terminal extra: **+$5 USD**\n"
-        "   • Ideal para negocios con múltiples puntos de venta\n\n"
+        "🏷️ *Cada aplicación:* **$25 USD** (pago único)\n"
+        "➕ *Terminal adicional:* **+$5 USD**\n\n"
         "✅ *¿Qué incluye?*\n"
         "   • Licencia completa sin restricciones\n"
         "   • Soporte técnico personalizado\n"
         "   • Actualizaciones futuras sin costo\n"
         "   • Tutorial de uso\n"
         "   • Configuración asistida\n\n"
-        "🚫 *Nada de:*\n"
-        "   • Mensualidades\n"
-        "   • Suscripciones\n"
-        "   • Costos ocultos\n\n"
-        "🛒 *Tienda:* {store}\n\n"
-        "¿Listo para automatizar tu negocio? 👇"
+        "🚫 *Nada de:* mensualidades, suscripciones, costos ocultos\n\n"
+        "🛒 *Tienda:* [A2K Digital Studio]({store})"
     ).format(store=STORE_URL)
 
 def build_payment_message():
-    """Construye el mensaje de métodos de pago."""
-    banks = ""
-    for b in BANCOS_NAC:
-        banks += f"   • {b['n']}\n"
-
-    intl = ""
-    for b in BANCOS_INT:
-        intl += f"   • {b['n']}\n"
-
+    banks = "\n".join(f"   • {b['n']}" for b in BANCOS_NAC)
+    intl = "\n".join(f"   • {b['n']}" for b in BANCOS_INT)
     return (
         "💳 *MÉTODOS DE PAGO - A2K Digital Studio*\n"
         "━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🏦 *Bancos Nacionales (Bs):*\n"
-        "{banks}\n"
-        "💵 *Plataformas Internacionales (USD):*\n"
-        "{intl}\n"
+        f"🏦 *Bancos Nacionales (Bs):*\n{banks}\n\n"
+        f"💵 *Plataformas Internacionales (USD):*\n{intl}\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "📲 Para recibir los datos completos de la cuenta que prefieras, "
-        "contacta directamente por WhatsApp.\n\n"
-        "✅ Aceptamos pagos en bolívares y dólares."
-    ).format(banks=banks, intl=intl)
+        "📲 Para datos completos, contacta por WhatsApp.\n\n"
+        "🛒 *Tienda:* [A2K Digital Studio]({store})"
+    ).format(store=STORE_URL)
 
 def build_payment_full_message():
-    """Mensaje completo con todos los datos bancarios."""
     nac_lines = ""
     for b in BANCOS_NAC:
-        nac_lines += (
-            f"\n🏦 *{b['n']}*\n"
-            f"   Cta: `{b['c']}`\n"
-            f"   Titular: {b['t']}\n"
-            f"   CI/RIF: {b['ci']}\n"
-        )
-
+        nac_lines += f"\n🏦 *{b['n']}*\n   Cta: `{b['c']}`\n   Titular: {b['t']}\n   CI/RIF: {b['ci']}\n"
     int_lines = ""
     for b in BANCOS_INT:
         line = f"\n💳 *{b['n']}*\n"
@@ -973,1142 +1721,844 @@ def build_payment_full_message():
         if 'bic' in b:
             line += f"   BIC: `{b['bic']}`\n"
         int_lines += line
-
     return (
         "💳 *DATOS BANCARIOS COMPLETOS*\n"
         "━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🏦 *CUENTAS NACIONALES (Bs):*\n"
-        "{nac}\n"
+        f"🏦 *CUENTAS NACIONALES (Bs):*\n{nac_lines}\n"
         "━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "💵 *CUENTAS INTERNACIONALES (USD):*\n"
-        "{intl}\n"
+        f"💵 *CUENTAS INTERNACIONALES (USD):*\n{int_lines}\n"
         "━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "⚠️ *Importante:* Envía el comprobante de pago por WhatsApp "
-        "para procesar tu pedido rápidamente.\n\n"
-        "📱 *WhatsApp:* @{wa}".format(wa=WHATSAPP_CONTACT)
-    ).format(nac=nac_lines, intl=int_lines)
+        "⚠️ Envía comprobante por WhatsApp para procesar tu pedido.\n\n"
+        f"📱 *WhatsApp:* +58 416-4117331\n\n"
+        "🛒 *Tienda:* [A2K Digital Studio]({store})"
+    ).format(store=STORE_URL)
 
 def build_contact_message():
-    """Construye el mensaje de contacto."""
     return (
         "👤 *CONTACTO - A2K Digital Studio*\n"
         "━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "👨‍💻 *Ingeniero Abigail Rojas*\n"
-        "   Desarrollador principal\n\n"
+        "👨‍💻 *Ingeniero Abigail Rojas*\n\n"
         "📲 *WhatsApp:* +58 416-4117331\n"
         "📧 *Email:* abijose1158@gmail.com\n"
         "🏢 *Empresa:* Inversiones 2K 3112 C.A\n"
         "   RIF: J-40632338-1\n\n"
-        "🛒 *Tienda Online:* {store}\n\n"
-        "⏰ Horario de atención: Lunes a Sábado, 8:00 AM - 6:00 PM\n\n"
-        "👇 Escríbenos directamente por WhatsApp:"
+        "🛒 *Tienda Online:* [A2K Digital Studio]({store})\n\n"
+        "⏰ Horario: Lunes a Sábado, 8:00 AM - 6:00 PM"
     ).format(store=STORE_URL)
 
 def build_store_message():
-    """Construye el mensaje de la tienda."""
     return (
         "🛒 *TIENDA ONLINE - A2K Digital Studio*\n"
         "━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "Visita nuestra tienda oficial donde puedes explorar todas nuestras aplicaciones:\n\n"
+        "Visita nuestra tienda oficial:\n\n"
         "🔗 [A2K Digital Studio - Tienda Online]({store})\n\n"
         "En la tienda encontrarás:\n"
         "• Descripciones detalladas de cada app\n"
         "• Capturas de pantalla\n"
         "• Enlaces a demos interactivas\n"
         "• Precios actualizados\n\n"
-        "¿Prefieres atención personalizada? Escríbenos por WhatsApp 👇"
+        "🛒 *Enlace directo:* [Abrir Tienda]({store})"
     ).format(store=STORE_URL)
 
-# ==================== FOLLOW-UP CON VENTAS (THREADING) ====================
+def build_welcome_message(first_name=None):
+    name = first_name or "amigo/a"
+    time_g = get_time_greeting()
+    if time_g == 'buenos_dia':
+        time_emoji = '☀️'
+    elif time_g == 'buenas_tardes':
+        time_emoji = '🌤️'
+    else:
+        time_emoji = '🌙'
+    return (
+        f"✨ *A2K Digital Studio*\n"
+        f"━ *Soluciones Tecnológicas para tu Negocio*\n\n"
+        f"¡Hola {name}! 👋 Bienvenido. Soy *Abi*, tu asistente experta en tecnología para negocios.\n\n"
+        f"Creo soluciones que hacen que tu negocio trabaje solo {time_emoji}\n\n"
+        f"📌 *¿Qué ofrecemos?*\n"
+        f"• 9 aplicaciones profesionales\n"
+        f"• Precio único: $25 USD por app\n"
+        f"• Un solo pago, sin mensualidades\n"
+        f"• Soporte técnico incluido\n"
+        f"• Demo en vivo gratis\n\n"
+        f"🛒 *Tienda Online:* [A2K Digital Studio]({store})\n\n"
+        f"Dime, ¿tienes un negocio? Cuéntame y te recomiendo la app perfecta 😊"
+    ).format(store=STORE_URL)
+
+# ==================== FOLLOW-UP THREADING ====================
 
 def send_selling_follow_up(chat_id, app):
-    """Envía un follow-up de venta después de un delay (en thread separado)."""
     def _send():
         try:
-            time.sleep(random.uniform(3, 5))
-            msg = random.choice(SELLING_FOLLOW_UP_VARIATIONS)
+            time.sleep(random.uniform(3, 6))
+            msg = smart_choice(FOLLOW_UP_SELLING, chat_id, 'followup')
             bot.send_message(chat_id, msg, parse_mode='Markdown')
-
-            # Botón adicional después del follow-up
             markup = types.InlineKeyboardMarkup()
             markup.add(
-                types.InlineKeyboardButton(
-                    f'💬 Comprar {app["nombre"]}',
-                    url=get_whatsapp_buy_url(app['nombre'])
-                )
+                types.InlineKeyboardButton(f'💬 Comprar {app["nombre"]}', url=get_whatsapp_buy_url(app['nombre'])),
             )
-            markup.add(types.InlineKeyboardButton('📋 Ver Catálogo', callback_data='catalog'))
-            bot.send_message(chat_id, "👇 ¿Te animas?", reply_markup=markup)
+            markup.add(types.InlineKeyboardButton('🛒 Tienda Online', url=STORE_URL))
+            bot.send_message(chat_id, "👇 ¿Te animas?", reply_markup=markup, parse_mode='Markdown')
         except Exception:
             pass
-
     thread = threading.Thread(target=_send, daemon=True)
     thread.start()
 
-def send_push_sale(chat_id, user_id):
-    """Envía un mensaje de cierre de venta para usuarios con muchas interacciones sin comprar."""
-    def _send():
-        try:
-            time.sleep(1.5)
-            msg = random.choice(PUSH_SALE_VARIATIONS)
-            bot.send_message(chat_id, msg, parse_mode='Markdown')
-        except Exception:
-            pass
-
-    thread = threading.Thread(target=_send, daemon=True)
-    thread.start()
-
-# ==================== HANDLERS DE COMANDOS ====================
+# ==================== COMMAND HANDLERS ====================
 
 @bot.message_handler(commands=['start'])
 def cmd_start(message):
-    """Comando /start - Mensaje de bienvenida personalizado."""
     chat_id = message.chat.id
     user_id = message.from_user.id
     username = message.from_user.username or "amigo"
     first_name = message.from_user.first_name
 
-    set_state(user_id, 'menu')
-    # Reset interaction counter on new start
-    user_interaction_counts[user_id] = 0
+    set_state(user_id, 'nuevo', retorno=is_returning_user(user_id))
     track_interaction(user_id)
 
-    logger.info(f"START - Usuario: @{username} ({user_id}) Nombre: {first_name}")
+    logger.info(f"START - @{username} ({user_id}) Nombre: {first_name}")
 
     simulate_typing(chat_id, 1.5)
 
+    # Welcome message with store
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
+        types.InlineKeyboardButton('🛒 Tienda Online', url=STORE_URL),
         types.InlineKeyboardButton('📋 Ver Catálogo', callback_data='catalog'),
-        types.InlineKeyboardButton('💰 Ver Precios', callback_data='precios'),
     )
     markup.add(
         types.InlineKeyboardButton('🎥 Solicitar Demo', callback_data='demo_general'),
         types.InlineKeyboardButton('💳 Métodos de Pago', callback_data='pagos'),
     )
     markup.add(
-        types.InlineKeyboardButton('🛒 Tienda Online', url=STORE_URL),
+        types.InlineKeyboardButton('💰 Ver Precios', callback_data='precios'),
         types.InlineKeyboardButton('👤 Contacto', callback_data='contacto'),
-    )
-    markup.add(
-        types.InlineKeyboardButton('🛒 Otros Productos', callback_data='otros_productos'),
     )
 
     bot.send_message(
-        chat_id,
-        build_welcome_message(first_name),
-        parse_mode='Markdown',
-        reply_markup=markup,
+        chat_id, build_welcome_message(first_name),
+        parse_mode='Markdown', reply_markup=markup,
         disable_web_page_preview=True
     )
 
-    # Enviar teclado persistente
+    # Send reply keyboard
     bot.send_message(
         chat_id,
-        "📱 *Usa el menú de abajo* para navegar más rápido, o simplemente dime qué tipo de negocio tienes y te recomiendo la app perfecta 😊",
+        "📱 *Usa el menú de abajo* para navegar rápido, o simplemente dime qué tipo de negocio tienes y te asesoro gratis 😊\n\n"
+        "🛒 *Tienda:* [A2K Digital Studio]({store})".format(store=STORE_URL),
         parse_mode='Markdown',
-        reply_markup=get_main_menu_keyboard()
+        reply_markup=get_main_menu_keyboard(),
+        disable_web_page_preview=True
     )
 
+    set_state(user_id, 'descubrimiento')
 
 @bot.message_handler(commands=['menu'])
 def cmd_menu(message):
-    """Comando /menu - Menú principal."""
     cmd_start(message)
-
 
 @bot.message_handler(commands=['catalogo', 'catalog'])
 def cmd_catalogo(message):
-    """Comando /catalogo - Catálogo completo."""
     chat_id = message.chat.id
-    user_id = message.from_user.id
-    set_state(user_id, 'catalog')
-    track_interaction(user_id)
-
+    set_state(message.from_user.id, 'menu')
+    track_interaction(message.from_user.id)
     simulate_typing(chat_id, 1.0)
-
     bot.send_message(
-        chat_id,
-        build_catalog_message(),
+        chat_id, build_catalog_message(),
         parse_mode='Markdown',
         reply_markup=get_catalog_inline_keyboard(),
         disable_web_page_preview=True
     )
 
-
 @bot.message_handler(commands=['precios', 'precio', 'prices'])
 def cmd_precios(message):
-    """Comando /precios - Información de precios."""
     chat_id = message.chat.id
-    user_id = message.from_user.id
-    set_state(user_id, 'menu')
-    track_interaction(user_id)
-
+    set_state(message.from_user.id, 'menu')
+    track_interaction(message.from_user.id)
     simulate_typing(chat_id, 1.0)
-
     markup = types.InlineKeyboardMarkup()
     markup.add(
         types.InlineKeyboardButton('📋 Ver Catálogo', callback_data='catalog'),
-        types.InlineKeyboardButton('💬 Comprar por WhatsApp', url=f'https://wa.me/{WHATSAPP_CONTACT}?text=Quiero%20info%20de%20precios%20A2K'),
+        types.InlineKeyboardButton('🛒 Tienda Online', url=STORE_URL),
     )
     markup.add(types.InlineKeyboardButton('🔙 Menú Principal', callback_data='main_menu'))
-
     bot.send_message(
-        chat_id,
-        build_pricing_message(),
-        parse_mode='Markdown',
-        reply_markup=markup,
+        chat_id, build_pricing_message(),
+        parse_mode='Markdown', reply_markup=markup,
         disable_web_page_preview=True
     )
 
-
 @bot.message_handler(commands=['demo'])
 def cmd_demo(message):
-    """Comando /demo - Solicitar demo."""
     chat_id = message.chat.id
-    user_id = message.from_user.id
-    set_state(user_id, 'demo_request')
-    track_interaction(user_id)
-
+    set_state(message.from_user.id, 'demo_request')
+    track_interaction(message.from_user.id)
     simulate_typing(chat_id, 1.0)
-    bot.send_message(chat_id, random.choice(DEMO_VARIATIONS), parse_mode='Markdown')
-
+    msg = smart_choice(DEMO_VARIATIONS, message.from_user.id, 'demo')
+    bot.send_message(chat_id, msg, parse_mode='Markdown', reply_markup=get_demo_inline_keyboard())
 
 @bot.message_handler(commands=['pagos', 'pago'])
 def cmd_pagos(message):
-    """Comando /pagos - Métodos de pago."""
     chat_id = message.chat.id
-    user_id = message.from_user.id
-    set_state(user_id, 'payment')
-    track_interaction(user_id)
-
+    set_state(message.from_user.id, 'payment')
+    track_interaction(message.from_user.id)
     simulate_typing(chat_id, 1.0)
-
     markup = types.InlineKeyboardMarkup()
     markup.add(
         types.InlineKeyboardButton('📋 Ver Datos Completos', callback_data='pagos_full'),
-        types.InlineKeyboardButton('💬 WhatsApp para Pagos', url=f'https://wa.me/{WHATSAPP_CONTACT}?text=Necesito%20datos%20de%20pago%20A2K'),
+        types.InlineKeyboardButton('💬 WhatsApp', url=f'https://wa.me/{WHATSAPP_CONTACT}?text=Necesito%20datos%20de%20pago%20A2K'),
     )
-    markup.add(types.InlineKeyboardButton('🔙 Menú Principal', callback_data='main_menu'))
-
+    markup.add(types.InlineKeyboardButton('🛒 Tienda Online', url=STORE_URL))
+    markup.add(types.InlineKeyboardButton('🔙 Menú', callback_data='main_menu'))
     bot.send_message(
-        chat_id,
-        build_payment_message(),
-        parse_mode='Markdown',
-        reply_markup=markup
+        chat_id, build_payment_message(),
+        parse_mode='Markdown', reply_markup=markup
     )
-
 
 @bot.message_handler(commands=['contacto', 'contact'])
 def cmd_contacto(message):
-    """Comando /contacto - Información de contacto."""
     chat_id = message.chat.id
     track_interaction(message.from_user.id)
-
     simulate_typing(chat_id, 1.0)
-
     markup = types.InlineKeyboardMarkup()
     markup.add(
         types.InlineKeyboardButton('💬 WhatsApp', url=f'https://wa.me/{WHATSAPP_CONTACT}'),
         types.InlineKeyboardButton('🛒 Tienda Online', url=STORE_URL),
     )
-    markup.add(types.InlineKeyboardButton('🔙 Menú Principal', callback_data='main_menu'))
-
+    markup.add(types.InlineKeyboardButton('🔙 Menú', callback_data='main_menu'))
     bot.send_message(
-        chat_id,
-        build_contact_message(),
-        parse_mode='Markdown',
-        reply_markup=markup,
+        chat_id, build_contact_message(),
+        parse_mode='Markdown', reply_markup=markup,
         disable_web_page_preview=True
     )
-
 
 @bot.message_handler(commands=['tienda', 'store'])
 def cmd_tienda(message):
-    """Comando /tienda - Link de la tienda."""
     chat_id = message.chat.id
     track_interaction(message.from_user.id)
-
     simulate_typing(chat_id, 1.0)
-
-    markup = types.InlineKeyboardMarkup()
-    markup.add(
-        types.InlineKeyboardButton('🛒 Abrir Tienda', url=STORE_URL),
-        types.InlineKeyboardButton('💬 WhatsApp', url=f'https://wa.me/{WHATSAPP_CONTACT}'),
-    )
-    markup.add(types.InlineKeyboardButton('🔙 Menú Principal', callback_data='main_menu'))
-
     bot.send_message(
-        chat_id,
-        build_store_message(),
-        parse_mode='Markdown',
-        reply_markup=markup,
+        chat_id, build_store_message(),
+        parse_mode='Markdown', reply_markup=get_store_inline_keyboard(),
         disable_web_page_preview=True
     )
 
-
 @bot.message_handler(commands=['bodegapro'])
 def cmd_bodegapro(message):
-    """Comando /bodegapro - Info directa de Bodega Pro."""
     chat_id = message.chat.id
     track_interaction(message.from_user.id)
     app = next((a for a in A2K_APPS if a['id'] == 'bodega_descarga'), None)
     if app:
         simulate_typing(chat_id, 1.5)
         bot.send_message(
-            chat_id,
-            build_app_detail_message(app),
+            chat_id, build_app_detail_message(app),
             parse_mode='Markdown',
             reply_markup=get_app_detail_keyboard(app),
             disable_web_page_preview=True
         )
 
-# ==================== HANDLER INTELIGENTE DE TEXTO (MEJORADO v4.0) ====================
-
-@bot.message_handler(func=lambda message: True, content_types=['text'])
-def handle_smart_text(message):
-    """Handler inteligente que interpreta cualquier texto del usuario.
-    
-    Prioridad de detección (orden importa):
-    1. Saludo puro + descripción de negocio → recomendación
-    2. Despedida
-    3. Agradecimiento (solo términos claros)
-    4. Pago/bancos (más específico que precio)
-    5. Precio
-    6. Demo
-    7. Compra (intención específica)
-    8. Contacto
-    9. Tienda
-    10. Descripción de negocio → recomendación
-    11. App por keywords
-    12. Desconocido (con push de venta si es 3ra+ interacción)
-    """
-    chat_id = message.chat.id
-    user_id = message.from_user.id
-    text = message.text.strip()
-    text_lower = text.lower()
-    username = message.from_user.username or 'unknown'
-
-    logger.info(f"TEXTO - @{username}: {text}")
-
-    state = get_state(user_id)
-    interaction_count = track_interaction(user_id)
-
-    simulate_typing(chat_id, random.uniform(0.8, 1.8))
-
-    # === 1. Saludo + descripción de negocio → modo recomendación ===
-    if is_greeting(text) or is_business_description(text):
-        # Primero verificar si describen un negocio (incluso con saludo)
-        app, tipo_negocio = recommend_app_for_business(text)
-        if app:
-            # Saludo + recomendación combinados
-            greeting = "¡Hola! 😊 " if is_greeting(text) else ""
-            business_msg = random.choice(BUSINESS_TYPE_VARIATIONS).format(tipo=tipo_negocio)
-            recommend_msg = random.choice(RECOMMENDATION_VARIATIONS).format(tipo=tipo_negocio)
-            
-            bot.send_message(
-                chat_id,
-                f"{greeting}{business_msg}\n\n{recommend_msg}",
-                parse_mode='Markdown'
-            )
-            simulate_typing(chat_id, 1.0)
-            bot.send_message(
-                chat_id,
-                build_app_detail_message(app),
-                parse_mode='Markdown',
-                reply_markup=get_app_detail_keyboard(app),
-                disable_web_page_preview=True
-            )
-            set_state(user_id, 'app_detail', app['id'])
-            
-            # Log lead
-            log_venta_lead(username, user_id, app['nombre'], text)
-            
-            # Follow-up de venta
-            send_selling_follow_up(chat_id, app)
-            return
-
-    # === 2. Saludo puro ===
-    if is_greeting(text) and len(text) < 30:
-        bot.send_message(chat_id, random.choice(GREETINGS_VARIATIONS), parse_mode='Markdown',
-                         reply_markup=get_main_menu_keyboard())
-        set_state(user_id, 'menu')
-        return
-
-    # === 3. Despedida ===
-    if is_goodbye(text) and len(text) < 30:
-        bot.send_message(chat_id, random.choice(GOODBYE_VARIATIONS), parse_mode='Markdown')
-        set_state(user_id, 'menu')
-        return
-
-    # === 4. Agradecimiento (solo términos claros) ===
-    if is_thank_you(text) and len(text) < 40:
-        resp = random.choice(THANK_YOU_VARIATIONS)
-        # Add a follow-up sometimes
-        if random.random() > 0.5:
-            resp += "\n\n" + random.choice(FOLLOW_UP_VARIATIONS)
-        bot.send_message(chat_id, resp, parse_mode='Markdown')
-        return
-
-    # === 5. Pago/bancos (más específico que precio general) ===
-    if is_payment_request(text):
-        bot.send_message(chat_id, "Te muestro las opciones de pago que tenemos disponibles 💳", parse_mode='Markdown')
-        simulate_typing(chat_id, 0.5)
-        cmd_pagos(message)
-        return
-
-    # === 6. Pregunta de precio (sin overlap con pago) ===
-    if is_price_question(text):
-        bot.send_message(
-            chat_id,
-            random.choice(PRICE_VARIATIONS),
-            parse_mode='Markdown'
-        )
-        set_state(user_id, 'menu')
-        return
-
-    # === 7. Solicitud de demo ===
-    if is_demo_request(text):
-        bot.send_message(chat_id, random.choice(DEMO_VARIATIONS), parse_mode='Markdown')
-        set_state(user_id, 'demo_request')
-
-        markup = types.InlineKeyboardMarkup()
-        markup.add(
-            types.InlineKeyboardButton('🎬 Solicitar Demo por WhatsApp', url=f'https://wa.me/{WHATSAPP_CONTACT}?text=Quiero%20ver%20una%20demo%20A2K'),
-        )
-        markup.add(types.InlineKeyboardButton('📋 Ver Catálogo', callback_data='catalog'))
-        bot.send_message(chat_id, "👇 agenda tu demo ahora:", reply_markup=markup)
-        return
-
-    # === 8. Intención de compra (específica, sin falsos positivos) ===
-    if is_purchase_intent(text):
-        # Detectar app específica
-        app = find_app_by_keywords(text)
-        app_name = app['nombre'] if app else 'app A2K'
-        
-        # Log lead de compra
-        log_venta_lead(username, user_id, app_name, text)
-        
-        bot.send_message(
-            chat_id,
-            random.choice(PURCHASE_VARIATIONS),
-            parse_mode='Markdown'
-        )
-
-        if app:
-            markup = types.InlineKeyboardMarkup()
-            markup.add(
-                types.InlineKeyboardButton(
-                    f'💬 Comprar {app["nombre"]}',
-                    url=get_whatsapp_buy_url(app['nombre'])
-                )
-            )
-            markup.add(types.InlineKeyboardButton('📋 Ver Catálogo', callback_data='catalog'))
-            bot.send_message(chat_id, f"Vi que te interesa **{app['icono']} {app['nombre']}**. ¡Excelente elección! 👇",
-                             parse_mode='Markdown', reply_markup=markup)
-        else:
-            markup = types.InlineKeyboardMarkup()
-            markup.add(
-                types.InlineKeyboardButton('💬 Comprar por WhatsApp', url=f'https://wa.me/{WHATSAPP_CONTACT}?text=Quiero%20comprar%20una%20app%20A2K'),
-            )
-            markup.add(types.InlineKeyboardButton('📋 Ver Catálogo', callback_data='catalog'))
-            bot.send_message(chat_id, "👇 Elige tu opción:", reply_markup=markup)
-
-        set_state(user_id, 'purchase')
-        return
-
-    # === 9. Petición de contacto ===
-    if is_contact_request(text):
-        bot.send_message(chat_id, "Claro que sí, aquí tienes los datos de contacto 👇", parse_mode='Markdown')
-        simulate_typing(chat_id, 0.5)
-        cmd_contacto(message)
-        return
-
-    # === 10. Petición de tienda ===
-    if is_store_request(text):
-        bot.send_message(chat_id, "¡Claro! Aquí tienes nuestra tienda online 🛒", parse_mode='Markdown')
-        simulate_typing(chat_id, 0.5)
-        cmd_tienda(message)
-        return
-
-    # === 11. Descripción de negocio → motor de recomendación ===
-    app, tipo_negocio = recommend_app_for_business(text)
-    if app:
-        business_msg = random.choice(BUSINESS_TYPE_VARIATIONS).format(tipo=tipo_negocio)
-        recommend_msg = random.choice(RECOMMENDATION_VARIATIONS).format(tipo=tipo_negocio)
-        
-        bot.send_message(
-            chat_id,
-            f"{business_msg}\n\n{recommend_msg}",
-            parse_mode='Markdown'
-        )
-        simulate_typing(chat_id, 1.0)
-        bot.send_message(
-            chat_id,
-            build_app_detail_message(app),
-            parse_mode='Markdown',
-            reply_markup=get_app_detail_keyboard(app),
-            disable_web_page_preview=True
-        )
-        set_state(user_id, 'app_detail', app['id'])
-        
-        # Log lead
-        log_venta_lead(username, user_id, app['nombre'], text)
-        
-        # Follow-up de venta
-        send_selling_follow_up(chat_id, app)
-        return
-
-    # === 12. Buscar app por keywords en el texto ===
-    app = find_app_by_keywords(text)
-    if app:
-        bot.send_message(
-            chat_id,
-            f"¡Creo que te refieres a **{app['icono']} {app['nombre']}**! 🎯 Déjame mostrarte todos los detalles:",
-            parse_mode='Markdown'
-        )
-        simulate_typing(chat_id, 1.0)
-        bot.send_message(
-            chat_id,
-            build_app_detail_message(app),
-            parse_mode='Markdown',
-            reply_markup=get_app_detail_keyboard(app),
-            disable_web_page_preview=True
-        )
-        set_state(user_id, 'app_detail', app['id'])
-
-        # Sugerir apps relacionadas después de un momento
-        suggest_related_apps(chat_id, app)
-        return
-
-    # === 13. Mensaje no reconocido - respuesta amigable ===
-    resp = random.choice(UNKNOWN_VARIATIONS)
-    bot.send_message(chat_id, resp, parse_mode='Markdown')
-
-    # Mostrar opciones
-    simulate_typing(chat_id, 1.0)
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        types.InlineKeyboardButton('📋 Catálogo A2K', callback_data='catalog'),
-        types.InlineKeyboardButton('💰 Precios', callback_data='precios'),
-    )
-    markup.add(
-        types.InlineKeyboardButton('🎥 Demo', callback_data='demo_general'),
-        types.InlineKeyboardButton('👤 Contacto', callback_data='contacto'),
-    )
-    bot.send_message(
-        chat_id,
-        "O si prefieres, puedes usar los botones del menú de abajo 👇",
-        reply_markup=markup
-    )
-
-    set_state(user_id, 'menu')
-
-    # === Push de venta si es 3ra+ interacción sin comprar ===
-    if interaction_count >= 3 and state.get('flow') != 'purchase':
-        send_push_sale(chat_id, user_id)
-
-
-def suggest_related_apps(chat_id, app):
-    """Sugiere apps relacionadas después de un delay."""
-    def _send():
-        try:
-            time.sleep(3)
-            suggestion = random.choice(FOLLOW_UP_VARIATIONS)
-            bot.send_message(chat_id, suggestion, parse_mode='Markdown')
-            bot.send_message(
-                chat_id,
-                "¿Te puede interesar alguna de estas? 👇",
-                parse_mode='Markdown',
-                reply_markup=get_suggested_apps_keyboard(app['id'])
-            )
-        except Exception:
-            pass  # Don't crash if the suggestion fails
-
-    thread = threading.Thread(target=_send, daemon=True)
-    thread.start()
-
-
-# ==================== CALLBACK QUERY HANDLERS ====================
+# ==================== CALLBACK QUERY HANDLER ====================
 
 @bot.callback_query_handler(func=lambda call: True)
-def callback_handler(call):
-    """Maneja todos los callbacks de botones inline."""
+def handle_callback(call):
     chat_id = call.message.chat.id
     user_id = call.from_user.id
     data = call.data
     username = call.from_user.username or 'unknown'
 
     logger.info(f"CALLBACK - @{username}: {data}")
-    track_interaction(user_id)
 
-    # Always answer the callback
-    try:
-        bot.answer_callback_query(call.id)
-    except Exception:
-        pass
+    bot.answer_callback_query(call.id)
 
-    # ========== MENÚ PRINCIPAL ==========
     if data == 'main_menu':
-        set_state(user_id, 'menu')
         simulate_typing(chat_id, 0.5)
-        markup = types.InlineKeyboardMarkup(row_width=2)
-        markup.add(
-            types.InlineKeyboardButton('📋 Ver Catálogo', callback_data='catalog'),
-            types.InlineKeyboardButton('💰 Ver Precios', callback_data='precios'),
-        )
-        markup.add(
-            types.InlineKeyboardButton('🎥 Solicitar Demo', callback_data='demo_general'),
-            types.InlineKeyboardButton('💳 Métodos de Pago', callback_data='pagos'),
-        )
-        markup.add(
-            types.InlineKeyboardButton('🛒 Tienda Online', url=STORE_URL),
-            types.InlineKeyboardButton('👤 Contacto', callback_data='contacto'),
-        )
-        markup.add(types.InlineKeyboardButton('🛒 Otros Productos', callback_data='otros_productos'))
-
-        bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=call.message.message_id,
-            text=(
-                "🏠 *Menú Principal - A2K Digital Studio*\n\n"
-                "¿En qué te puedo ayudar hoy? Selecciona una opción 👇"
-            ),
+        bot.send_message(
+            chat_id,
+            "📂 *Menú Principal*\n\n¿En qué te puedo ayudar? 😊\n\n"
+            "🛒 *Tienda:* [A2K Digital Studio]({store})".format(store=STORE_URL),
             parse_mode='Markdown',
-            reply_markup=markup
+            reply_markup=get_main_menu_keyboard(),
+            disable_web_page_preview=True
         )
-        return
+        set_state(user_id, 'descubrimiento')
 
-    # ========== CATÁLOGO ==========
     elif data == 'catalog':
-        set_state(user_id, 'catalog')
-        try:
-            bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=call.message.message_id,
-                text=build_catalog_message(),
-                parse_mode='Markdown',
-                reply_markup=get_catalog_inline_keyboard(),
-                disable_web_page_preview=True
-            )
-        except Exception:
-            bot.send_message(
-                chat_id,
-                build_catalog_message(),
-                parse_mode='Markdown',
-                reply_markup=get_catalog_inline_keyboard(),
-                disable_web_page_preview=True
-            )
-        return
-
-    # ========== DETALLE DE APP ==========
-    elif data.startswith('app_'):
-        app_id = data[4:]
-        app = next((a for a in A2K_APPS if a['id'] == app_id), None)
-        if app:
-            set_state(user_id, 'app_detail', app_id)
-            
-            # Log interés en la app
-            log_venta_lead(username, user_id, app['nombre'], f"Callback: vio detalle de {app['nombre']}")
-            
-            try:
-                bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=call.message.message_id,
-                    text=build_app_detail_message(app),
-                    parse_mode='Markdown',
-                    reply_markup=get_app_detail_keyboard(app),
-                    disable_web_page_preview=True
-                )
-            except Exception:
-                bot.send_message(
-                    chat_id,
-                    build_app_detail_message(app),
-                    parse_mode='Markdown',
-                    reply_markup=get_app_detail_keyboard(app),
-                    disable_web_page_preview=True
-                )
-        return
-
-    # ========== DEMO GENERAL ==========
-    elif data == 'demo_general':
-        set_state(user_id, 'demo_request')
-        try:
-            bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=call.message.message_id,
-                text=random.choice(DEMO_VARIATIONS),
-                parse_mode='Markdown',
-                reply_markup=types.InlineKeyboardMarkup()
-            )
-        except Exception:
-            bot.send_message(chat_id, random.choice(DEMO_VARIATIONS), parse_mode='Markdown')
-
-        markup = types.InlineKeyboardMarkup()
-        markup.add(
-            types.InlineKeyboardButton('🎬 Solicitar Demo por WhatsApp', url=f'https://wa.me/{WHATSAPP_CONTACT}?text=Quiero%20ver%20una%20demo%20A2K'),
+        simulate_typing(chat_id, 0.5)
+        bot.send_message(
+            chat_id, build_catalog_message(),
+            parse_mode='Markdown',
+            reply_markup=get_catalog_inline_keyboard(),
+            disable_web_page_preview=True
         )
-        markup.add(types.InlineKeyboardButton('📋 Ver Catálogo', callback_data='catalog'))
-        markup.add(types.InlineKeyboardButton('🔙 Menú Principal', callback_data='main_menu'))
-        bot.send_message(chat_id, "👇 Agenda tu demo gratis ahora:", reply_markup=markup)
-        return
+        set_state(user_id, 'menu')
 
-    # ========== DEMO DE APP ESPECÍFICA ==========
-    elif data.startswith('demo_'):
-        app_id = data[5:]
+    elif data.startswith('app_'):
+        app_id = data.replace('app_', '')
         app = next((a for a in A2K_APPS if a['id'] == app_id), None)
         if app:
-            set_state(user_id, 'demo_request', app_id)
-            
-            # Log interés en demo
-            log_venta_lead(username, user_id, app['nombre'], f"Callback: pidió demo de {app['nombre']}")
-
-            demo_msg = (
-                f"🎥 *Demo - {app['icono']} {app['nombre']}*\n\n"
-                f"¡Excelente! Quieres ver {app['nombre']} en acción 🎯\n\n"
+            simulate_typing(chat_id, 1.0)
+            bot.send_message(
+                chat_id, build_app_detail_message(app),
+                parse_mode='Markdown',
+                reply_markup=get_app_detail_keyboard(app),
+                disable_web_page_preview=True
             )
+            set_state(user_id, 'presentacion', app_interes=app['id'])
+            log_venta_lead(username, user_id, app['nombre'], f"Callback: {data}", 'catalogo')
 
-            if app.get('demo'):
-                demo_msg += f"🌐 *Demo online:* [Probar ahora]({app['demo']})\n\n"
-
-            demo_msg += (
-                "📞 También puedes solicitar una demo en vivo por videollamada "
-                "con el ingeniero Abigail. Te muestra todo el sistema, responde tus dudas "
-                "y tú decides si es lo que necesitas.\n\n"
-                "✅ Totalmente gratis\n"
-                "✅ Sin compromiso\n\n"
-                "👇 agenda tu demo ahora:"
-            )
-
-            try:
-                bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=call.message.message_id,
-                    text=demo_msg,
-                    parse_mode='Markdown',
-                    reply_markup=types.InlineKeyboardMarkup(),
-                    disable_web_page_preview=True
-                )
-            except Exception:
-                bot.send_message(chat_id, demo_msg, parse_mode='Markdown', disable_web_page_preview=True)
-
+    elif data.startswith('demo_'):
+        app_id = data.replace('demo_', '')
+        app = next((a for a in A2K_APPS if a['id'] == app_id), None)
+        if app:
+            simulate_typing(chat_id, 0.5)
+            msg = smart_choice(DEMO_VARIATIONS, user_id, 'demo')
+            bot.send_message(chat_id, msg, parse_mode='Markdown')
+            simulate_typing(chat_id, 0.5)
             markup = types.InlineKeyboardMarkup()
             markup.add(
-                types.InlineKeyboardButton(
-                    f'🎬 Demo {app["nombre"]} por WhatsApp',
-                    url=get_whatsapp_demo_url(app['nombre'])
-                )
+                types.InlineKeyboardButton('🎬 Ver Demo', url=get_whatsapp_demo_url(app['nombre'])),
+                types.InlineKeyboardButton('🛒 Tienda Online', url=STORE_URL),
             )
-            if app.get('demo'):
-                markup.add(types.InlineKeyboardButton('🌐 Ver Demo Online', url=app['demo']))
-            # Bodega Pro links
-            if app['id'] in ('bodega_descarga', 'mercado_logic'):
-                markup.add(
-                    types.InlineKeyboardButton('📋 Demo Bodega Pro', url=BODEGA_PRO_DEMO_URL),
-                    types.InlineKeyboardButton('📄 Licencia Bodega Pro', url=BODEGA_PRO_LICENCIA_URL),
-                )
-            markup.add(types.InlineKeyboardButton('📋 Catálogo', callback_data='catalog'))
-            markup.add(types.InlineKeyboardButton('🔙 Menú', callback_data='main_menu'))
-            bot.send_message(chat_id, "👇 Elige cómo prefieres ver la demo:", reply_markup=markup)
-        return
+            bot.send_message(chat_id, "👇 Agenda tu demo ahora:", reply_markup=markup)
 
-    # ========== BODEGA PRO DEMO (NUEVO v4.0) ==========
-    elif data == 'bodega_pro_demo':
-        set_state(user_id, 'demo_request', 'bodega_descarga')
-        
-        log_venta_lead(username, user_id, 'Bodega Descarga Pro', f"Callback: solicitó demo Bodega Pro (formulario)")
-        
-        msg = (
-            "📋 *Demo Bodega Pro*\n\n"
-            "¡Excelente! Puedes solicitar tu demo de Bodega Pro directamente "
-            "a través de nuestro formulario oficial.\n\n"
-            "Completa el formulario y el ingeniero Abigail se pondrá en contacto contigo "
-            "para programar una demo en vivo personalizada.\n\n"
-            "✅ Gratis\n"
-            "✅ Sin compromiso\n"
-            "✅ Atención personalizada\n\n"
-            "👇 Completa el formulario:"
-        )
-        try:
-            bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=call.message.message_id,
-                text=msg,
-                parse_mode='Markdown',
-                reply_markup=types.InlineKeyboardMarkup(),
-                disable_web_page_preview=True
-            )
-        except Exception:
-            bot.send_message(chat_id, msg, parse_mode='Markdown', disable_web_page_preview=True)
-        
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton('📋 Formulario Demo Bodega Pro', url=BODEGA_PRO_DEMO_URL))
-        markup.add(types.InlineKeyboardButton('💬 WhatsApp Directo', url=get_whatsapp_demo_url('Bodega Descarga Pro')))
-        markup.add(types.InlineKeyboardButton('🔙 Menú', callback_data='main_menu'))
-        bot.send_message(chat_id, "👇 Elige tu opción:", reply_markup=markup)
-        return
-
-    # ========== BODEGA PRO LICENCIA (NUEVO v4.0) ==========
-    elif data == 'bodega_pro_licencia':
-        set_state(user_id, 'purchase', 'bodega_descarga')
-        
-        log_venta_lead(username, user_id, 'Bodega Descarga Pro', f"Callback: solicitó licencia Bodega Pro (formulario)")
-        
-        msg = (
-            "📄 *Licencia Bodega Pro*\n\n"
-            "¡Vamos a tramitar tu licencia! Puedes hacerlo de dos formas:\n\n"
-            "1️⃣ A través de nuestro formulario oficial\n"
-            "2️⃣ Directamente por WhatsApp con el ingeniero\n\n"
-            "El proceso es rápido: completas tus datos, eliges método de pago, "
-            "y en minutos tienes tu licencia activa.\n\n"
-            "💰 Precio: **$25 USD** (pago único)\n"
-            "✅ Soporte incluido\n"
-            "✅ Configuración asistida"
-        )
-        try:
-            bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=call.message.message_id,
-                text=msg,
-                parse_mode='Markdown',
-                reply_markup=types.InlineKeyboardMarkup(),
-                disable_web_page_preview=True
-            )
-        except Exception:
-            bot.send_message(chat_id, msg, parse_mode='Markdown', disable_web_page_preview=True)
-        
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton('📄 Formulario Licencia Bodega Pro', url=BODEGA_PRO_LICENCIA_URL))
-        markup.add(types.InlineKeyboardButton('💬 Comprar por WhatsApp', url=get_whatsapp_buy_url('Bodega Descarga Pro')))
-        markup.add(types.InlineKeyboardButton('📋 Catálogo', callback_data='catalog'))
-        markup.add(types.InlineKeyboardButton('🔙 Menú', callback_data='main_menu'))
-        bot.send_message(chat_id, "👇 ¿Cómo prefieres tramitar tu licencia?", reply_markup=markup)
-        return
-
-    # ========== PRECIOS ==========
     elif data == 'precios':
-        set_state(user_id, 'menu')
+        simulate_typing(chat_id, 0.5)
         markup = types.InlineKeyboardMarkup()
         markup.add(
             types.InlineKeyboardButton('📋 Catálogo', callback_data='catalog'),
-            types.InlineKeyboardButton('💬 Comprar', url=f'https://wa.me/{WHATSAPP_CONTACT}?text=Quiero%20info%20de%20precios%20A2K'),
+            types.InlineKeyboardButton('🛒 Tienda Online', url=STORE_URL),
         )
-        markup.add(types.InlineKeyboardButton('🔙 Menú Principal', callback_data='main_menu'))
-        try:
-            bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=call.message.message_id,
-                text=build_pricing_message(),
-                parse_mode='Markdown',
-                reply_markup=markup,
-                disable_web_page_preview=True
-            )
-        except Exception:
-            bot.send_message(chat_id, build_pricing_message(), parse_mode='Markdown', reply_markup=markup,
-                             disable_web_page_preview=True)
-        return
+        bot.send_message(
+            chat_id, build_pricing_message(),
+            parse_mode='Markdown', reply_markup=markup,
+            disable_web_page_preview=True
+        )
 
-    # ========== PAGOS ==========
     elif data == 'pagos':
-        set_state(user_id, 'payment')
+        simulate_typing(chat_id, 0.5)
         markup = types.InlineKeyboardMarkup()
         markup.add(
             types.InlineKeyboardButton('📋 Datos Completos', callback_data='pagos_full'),
-            types.InlineKeyboardButton('💬 WhatsApp', url=f'https://wa.me/{WHATSAPP_CONTACT}?text=Necesito%20datos%20de%20pago'),
+            types.InlineKeyboardButton('💬 WhatsApp', url=f'https://wa.me/{WHATSAPP_CONTACT}?text=Datos%20de%20pago%20A2K'),
         )
-        markup.add(types.InlineKeyboardButton('🔙 Menú Principal', callback_data='main_menu'))
-        try:
-            bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=call.message.message_id,
-                text=build_payment_message(),
-                parse_mode='Markdown',
-                reply_markup=markup
-            )
-        except Exception:
-            bot.send_message(chat_id, build_payment_message(), parse_mode='Markdown', reply_markup=markup)
-        return
+        markup.add(types.InlineKeyboardButton('🛒 Tienda', url=STORE_URL))
+        bot.send_message(chat_id, build_payment_message(), parse_mode='Markdown', reply_markup=markup)
 
     elif data == 'pagos_full':
+        simulate_typing(chat_id, 0.5)
         markup = types.InlineKeyboardMarkup()
-        markup.add(
-            types.InlineKeyboardButton('💬 WhatsApp', url=f'https://wa.me/{WHATSAPP_CONTACT}?text=Comprobante%20de%20pago%20enviado'),
-        )
-        markup.add(types.InlineKeyboardButton('🔙 Resumen', callback_data='pagos'))
-        bot.send_message(
-            chat_id,
-            build_payment_full_message(),
-            parse_mode='Markdown',
-            reply_markup=markup
-        )
-        return
+        markup.add(types.InlineKeyboardButton('🔙 Volver', callback_data='pagos'))
+        markup.add(types.InlineKeyboardButton('🛒 Tienda', url=STORE_URL))
+        bot.send_message(chat_id, build_payment_full_message(), parse_mode='Markdown', reply_markup=markup)
 
-    # ========== CONTACTO ==========
+    elif data == 'demo_general':
+        simulate_typing(chat_id, 0.5)
+        msg = smart_choice(DEMO_VARIATIONS, user_id, 'demo')
+        bot.send_message(chat_id, msg, parse_mode='Markdown', reply_markup=get_demo_inline_keyboard())
+
     elif data == 'contacto':
+        simulate_typing(chat_id, 0.5)
         markup = types.InlineKeyboardMarkup()
         markup.add(
             types.InlineKeyboardButton('💬 WhatsApp', url=f'https://wa.me/{WHATSAPP_CONTACT}'),
-            types.InlineKeyboardButton('🛒 Tienda Online', url=STORE_URL),
+            types.InlineKeyboardButton('🛒 Tienda', url=STORE_URL),
         )
-        markup.add(types.InlineKeyboardButton('🔙 Menú Principal', callback_data='main_menu'))
-        try:
-            bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=call.message.message_id,
-                text=build_contact_message(),
-                parse_mode='Markdown',
-                reply_markup=markup,
-                disable_web_page_preview=True
-            )
-        except Exception:
-            bot.send_message(chat_id, build_contact_message(), parse_mode='Markdown', reply_markup=markup,
-                             disable_web_page_preview=True)
-        return
-
-    # ========== OTROS PRODUCTOS (Amazon/AliExpress) ==========
-    elif data == 'otros_productos':
-        markup = types.InlineKeyboardMarkup(row_width=2)
-        markup.add(
-            types.InlineKeyboardButton('🇪🇸 Amazon España', callback_data='amazon_es'),
-            types.InlineKeyboardButton('🇺🇸 Amazon USA', callback_data='amazon_usa'),
-            types.InlineKeyboardButton('🇨🇳 AliExpress', callback_data='aliexpress'),
-        )
-        markup.add(types.InlineKeyboardButton('🔙 Menú Principal', callback_data='main_menu'))
-        try:
-            bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=call.message.message_id,
-                text=(
-                    "🛒 *Otros Productos*\n\n"
-                    "Además de nuestras aplicaciones de gestión, también ofrecemos "
-                    "productos seleccionados a través de nuestras tiendas asociadas:\n\n"
-                    "🇪🇸 Amazon España - Envío desde España\n"
-                    "🇺🇸 Amazon USA - Envío desde Estados Unidos\n"
-                    "🇨🇳 AliExpress - Mejores precios directos\n\n"
-                    "👇 Selecciona una tienda:"
-                ),
-                parse_mode='Markdown',
-                reply_markup=markup
-            )
-        except Exception:
-            bot.send_message(chat_id, "🛒 *Otros Productos*\n\nSelecciona una tienda 👇",
-                             parse_mode='Markdown', reply_markup=markup)
-        return
-
-    # ========== AMAZON ESPAÑA ==========
-    elif data == 'amazon_es':
-        markup = types.InlineKeyboardMarkup(row_width=2)
-        markup.add(
-            types.InlineKeyboardButton('📱 Tecnología', callback_data='aes_tech'),
-            types.InlineKeyboardButton('💄 Belleza', callback_data='aes_belleza'),
-            types.InlineKeyboardButton('🏠 Hogar', callback_data='aes_hogar'),
-            types.InlineKeyboardButton('💪 Fitness', callback_data='aes_fitness'),
-        )
-        markup.add(types.InlineKeyboardButton('🔙 Volver', callback_data='otros_productos'))
-        try:
-            bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=call.message.message_id,
-                text="🇪🇸 *AMAZON ESPAÑA*\n\nSelecciona una categoría:",
-                parse_mode='Markdown',
-                reply_markup=markup
-            )
-        except Exception:
-            bot.send_message(chat_id, "🇪🇸 *AMAZON ESPAÑA*\n\nSelecciona una categoría:",
-                             parse_mode='Markdown', reply_markup=markup)
-        return
-
-    elif data.startswith('aes_'):
-        cat = data[4:]
-        productos = AMAZON_ES.get(cat, [])
-        cat_names = {'tech': '📱 Tecnología', 'belleza': '💄 Belleza', 'hogar': '🏠 Hogar', 'fitness': '💪 Fitness'}
-        cat_name = cat_names.get(cat, '📦 Productos')
-
-        texto = f"🇪🇸 *{cat_name} - Amazon España*\n\n"
-        for p in productos:
-            texto += f"• {p['nombre']}\n  🔗 [Ver producto]({p['link']})\n\n"
-
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton('🔙 Volver a categorías', callback_data='amazon_es'))
-        markup.add(types.InlineKeyboardButton('🔙 Menú Principal', callback_data='main_menu'))
-        try:
-            bot.edit_message_text(texto, chat_id, call.message.message_id, parse_mode='Markdown', reply_markup=markup,
-                                  disable_web_page_preview=True)
-        except Exception:
-            bot.send_message(chat_id, texto, parse_mode='Markdown', reply_markup=markup,
-                             disable_web_page_preview=True)
-        return
-
-    # ========== AMAZON USA ==========
-    elif data == 'amazon_usa':
-        markup = types.InlineKeyboardMarkup(row_width=2)
-        markup.add(
-            types.InlineKeyboardButton('📱 Tech', callback_data='aus_tech'),
-            types.InlineKeyboardButton('🏠 Hogar', callback_data='aus_hogar'),
-            types.InlineKeyboardButton('💪 Fitness', callback_data='aus_fitness'),
-            types.InlineKeyboardButton('🍽️ Cocina', callback_data='aus_cocina'),
-            types.InlineKeyboardButton('💄 Belleza', callback_data='aus_belleza'),
-        )
-        markup.add(types.InlineKeyboardButton('🔙 Volver', callback_data='otros_productos'))
-        try:
-            bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=call.message.message_id,
-                text="🇺🇸 *AMAZON USA*\n\nSelecciona una categoría:",
-                parse_mode='Markdown',
-                reply_markup=markup
-            )
-        except Exception:
-            bot.send_message(chat_id, "🇺🇸 *AMAZON USA*\n\nSelecciona una categoría:",
-                             parse_mode='Markdown', reply_markup=markup)
-        return
-
-    elif data.startswith('aus_'):
-        cat = data[4:]
-        productos = AMAZON_USA.get(cat, [])
-        cat_names = {'tech': '📱 Tecnología', 'hogar': '🏠 Hogar', 'fitness': '💪 Fitness',
-                     'cocina': '🍽️ Cocina', 'belleza': '💄 Belleza'}
-        cat_name = cat_names.get(cat, '📦 Productos')
-
-        texto = f"🇺🇸 *{cat_name} - Amazon USA*\n\n"
-        for p in productos:
-            texto += f"• {p['nombre']}\n  🔗 [Ver producto]({p['link']})\n\n"
-
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton('🔙 Volver a categorías', callback_data='amazon_usa'))
-        markup.add(types.InlineKeyboardButton('🔙 Menú Principal', callback_data='main_menu'))
-        try:
-            bot.edit_message_text(texto, chat_id, call.message.message_id, parse_mode='Markdown', reply_markup=markup,
-                                  disable_web_page_preview=True)
-        except Exception:
-            bot.send_message(chat_id, texto, parse_mode='Markdown', reply_markup=markup,
-                             disable_web_page_preview=True)
-        return
-
-    # ========== ALIEXPRESS ==========
-    elif data == 'aliexpress':
-        texto = "🇨🇳 *ALIEXPRESS - Ofertas Directas*\n\n"
-        for p in ALIEXPRESS:
-            texto += f"• {p['nombre']}\n  🔗 [Ver producto]({p['link']})\n\n"
-
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton('🔙 Volver', callback_data='otros_productos'))
-        markup.add(types.InlineKeyboardButton('🔙 Menú Principal', callback_data='main_menu'))
-        try:
-            bot.edit_message_text(texto, chat_id, call.message.message_id, parse_mode='Markdown', reply_markup=markup,
-                                  disable_web_page_preview=True)
-        except Exception:
-            bot.send_message(chat_id, texto, parse_mode='Markdown', reply_markup=markup,
-                             disable_web_page_preview=True)
-        return
-
-    # ========== VOLVER AL CATÁLOGO ==========
-    elif data == 'back_to_catalog':
-        set_state(user_id, 'catalog')
-        try:
-            bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=call.message.message_id,
-                text=build_catalog_message(),
-                parse_mode='Markdown',
-                reply_markup=get_catalog_inline_keyboard(),
-                disable_web_page_preview=True
-            )
-        except Exception:
-            bot.send_message(
-                chat_id,
-                build_catalog_message(),
-                parse_mode='Markdown',
-                reply_markup=get_catalog_inline_keyboard(),
-                disable_web_page_preview=True
-            )
-        return
-
-    # ========== CALLBACK NO RECONOCIDO ==========
-    else:
-        logger.warning(f"Callback no reconocido: {data} de @{call.from_user.username}")
         bot.send_message(
-            chat_id,
-            "Hmm, ese botón ya no está disponible 🤔 Pero no te preocupes, aquí tienes el menú principal 👇",
-            parse_mode='Markdown'
+            chat_id, build_contact_message(),
+            parse_mode='Markdown', reply_markup=markup,
+            disable_web_page_preview=True
         )
+
+    elif data == 'otros_productos':
+        simulate_typing(chat_id, 1.0)
+        send_other_products(chat_id)
+
+    elif data == 'tienda':
         simulate_typing(chat_id, 0.5)
-        markup = types.InlineKeyboardMarkup(row_width=2)
+        bot.send_message(
+            chat_id, build_store_message(),
+            parse_mode='Markdown', reply_markup=get_store_inline_keyboard(),
+            disable_web_page_preview=True
+        )
+
+# ==================== OTHER PRODUCTS ====================
+
+def send_other_products(chat_id):
+    """Envía los productos de Amazon y AliExpress."""
+    msg = (
+        "🛒 *OTROS PRODUCTOS - A2K Digital Studio*\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "🇪🇸 *Amazon España:*\n"
+    )
+    for cat, products in AMAZON_ES.items():
+        for p in products:
+            msg += f"   {p['nombre']} — [Ver]({p['link']})\n"
+    msg += "\n🇺🇸 *Amazon USA:*\n"
+    for cat, products in AMAZON_USA.items():
+        for p in products:
+            msg += f"   {p['nombre']} — [Ver]({p['link']})\n"
+    msg += "\n🌍 *AliExpress:*\n"
+    for p in ALIEXPRESS:
+        msg += f"   {p['nombre']} — [Ver]({p['link']})\n"
+    msg += f"\n🛒 *Tienda A2K:* [A2K Digital Studio]({STORE_URL})"
+
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton('🛒 Tienda A2K', url=STORE_URL))
+    markup.add(types.InlineKeyboardButton('📋 Catálogo A2K', callback_data='catalog'))
+    markup.add(types.InlineKeyboardButton('🔙 Menú', callback_data='main_menu'))
+    bot.send_message(chat_id, msg, parse_mode='Markdown', reply_markup=markup, disable_web_page_preview=True)
+
+# ==================== MAIN TEXT HANDLER (STATE MACHINE) ====================
+
+@bot.message_handler(func=lambda message: True, content_types=['text'])
+def handle_smart_text(message):
+    """Handler principal con state machine y flujo de marketing conversacional."""
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+    text = message.text.strip()
+    text_lower = text.lower()
+    username = message.from_user.username or 'unknown'
+
+    logger.info(f"TEXTO - @{username} ({user_id}): {text}")
+
+    state = get_state(user_id)
+    flow = state.get('flow', 'nuevo')
+    interaction_count = track_interaction(user_id)
+
+    simulate_typing(chat_id, random.uniform(0.8, 2.0))
+
+    # ====== BUTTON TEXT HANDLERS ======
+    if text == '🛒 Tienda Online':
+        bot.send_message(
+            chat_id, build_store_message(),
+            parse_mode='Markdown', reply_markup=get_store_inline_keyboard(),
+            disable_web_page_preview=True
+        )
+        return
+
+    if text == '📋 Catálogo A2K':
+        bot.send_message(
+            chat_id, build_catalog_message(),
+            parse_mode='Markdown',
+            reply_markup=get_catalog_inline_keyboard(),
+            disable_web_page_preview=True
+        )
+        set_state(user_id, 'menu')
+        return
+
+    if text == '💰 Precios':
+        markup = types.InlineKeyboardMarkup()
         markup.add(
             types.InlineKeyboardButton('📋 Catálogo', callback_data='catalog'),
-            types.InlineKeyboardButton('🏠 Menú', callback_data='main_menu'),
+            types.InlineKeyboardButton('🛒 Tienda Online', url=STORE_URL),
         )
-        bot.send_message(chat_id, "¿Qué prefieres?", reply_markup=markup)
+        bot.send_message(
+            chat_id, smart_choice(PRICE_VARIATIONS, user_id, 'precio'),
+            parse_mode='Markdown', reply_markup=markup,
+            disable_web_page_preview=True
+        )
+        return
+
+    if text == '💳 Métodos de Pago':
+        markup = types.InlineKeyboardMarkup()
+        markup.add(
+            types.InlineKeyboardButton('📋 Datos Completos', callback_data='pagos_full'),
+            types.InlineKeyboardButton('💬 WhatsApp', url=f'https://wa.me/{WHATSAPP_CONTACT}?text=Datos%20de%20pago'),
+        )
+        markup.add(types.InlineKeyboardButton('🛒 Tienda', url=STORE_URL))
+        bot.send_message(chat_id, build_payment_message(), parse_mode='Markdown', reply_markup=markup)
+        return
+
+    if text == '🎥 Ver Demo':
+        msg = smart_choice(DEMO_VARIATIONS, user_id, 'demo')
+        bot.send_message(chat_id, msg, parse_mode='Markdown', reply_markup=get_demo_inline_keyboard())
+        return
+
+    if text == '👤 Contacto':
+        markup = types.InlineKeyboardMarkup()
+        markup.add(
+            types.InlineKeyboardButton('💬 WhatsApp', url=f'https://wa.me/{WHATSAPP_CONTACT}'),
+            types.InlineKeyboardButton('🛒 Tienda', url=STORE_URL),
+        )
+        bot.send_message(
+            chat_id, build_contact_message(),
+            parse_mode='Markdown', reply_markup=markup,
+            disable_web_page_preview=True
+        )
+        return
+
+    if text == '🛒 Otros Productos':
+        simulate_typing(chat_id, 1.0)
+        send_other_products(chat_id)
+        return
+
+    # ====== PHASE 5: CLOSING — purchase intent ======
+    if is_purchase_intent(text):
+        app = find_app_by_keywords(text)
+        app_interes = state.get('app_interes')
+        if not app and app_interes:
+            app = next((a for a in A2K_APPS if a['id'] == app_interes), None)
+
+        app_name = app['nombre'] if app else 'app A2K'
+        log_venta_lead(username, user_id, app_name, text, 'cierre')
+
+        cierre = smart_choice(CIERRES, user_id, 'cierre')
+        bot.send_message(chat_id, cierre, parse_mode='Markdown')
+
+        simulate_typing(chat_id, 0.5)
+        bot.send_message(
+            chat_id,
+            "👇 Elige tu opción:",
+            reply_markup=get_purchase_inline_keyboard(app)
+        )
+        set_state(user_id, 'cierre', app_interes=app['id'] if app else None)
+        return
+
+    # ====== OBJECTION HANDLING ======
+    objection = detect_objection(text)
+    if objection:
+        state['ultima_objecion'] = objection
+        user_states[user_id] = state
+        responses = OBJECIONES[objection]['respuestas']
+        resp = smart_choice(responses, user_id, f'objecion_{objection}')
+
+        log_venta_lead(username, user_id, state.get('app_interes', 'general'), text, f'objecion:{objection}')
+
+        bot.send_message(chat_id, resp, parse_mode='Markdown')
+
+        # After objection, follow up with relevant buttons
+        simulate_typing(chat_id, 0.5)
+        app_interes = state.get('app_interes')
+        app = next((a for a in A2K_APPS if a['id'] == app_interes), None) if app_interes else None
+        markup = types.InlineKeyboardMarkup()
+        if app:
+            markup.add(
+                types.InlineKeyboardButton('🎬 Ver Demo', url=get_whatsapp_demo_url(app['nombre'])),
+                types.InlineKeyboardButton('🛒 Tienda', url=STORE_URL),
+            )
+        else:
+            markup.add(
+                types.InlineKeyboardButton('🎬 Solicitar Demo', callback_data='demo_general'),
+                types.InlineKeyboardButton('🛒 Tienda', url=STORE_URL),
+            )
+        markup.add(types.InlineKeyboardButton('📋 Catálogo', callback_data='catalog'))
+        bot.send_message(chat_id, "👇 ¿Qué prefieres?", reply_markup=markup)
+        return
+
+    # ====== GOODBYE ======
+    if is_goodbye(text) and len(text) < 40:
+        resp = smart_choice(GOODBYE_VARIATIONS, user_id, 'goodbye')
+        bot.send_message(chat_id, resp, parse_mode='Markdown', disable_web_page_preview=True)
+        return
+
+    # ====== THANK YOU ======
+    if is_thank_you(text) and len(text) < 40:
+        resp = smart_choice(THANK_YOU_VARIATIONS, user_id, 'thanks')
+        bot.send_message(chat_id, resp, parse_mode='Markdown', disable_web_page_preview=True)
+        return
+
+    # ====== PAYMENT REQUEST ======
+    if is_payment_request(text):
+        bot.send_message(chat_id, "Te muestro las opciones de pago 💳", parse_mode='Markdown')
+        simulate_typing(chat_id, 0.5)
+        markup = types.InlineKeyboardMarkup()
+        markup.add(
+            types.InlineKeyboardButton('📋 Datos Completos', callback_data='pagos_full'),
+            types.InlineKeyboardButton('💬 WhatsApp', url=f'https://wa.me/{WHATSAPP_CONTACT}?text=Datos%20de%20pago'),
+        )
+        markup.add(types.InlineKeyboardButton('🛒 Tienda', url=STORE_URL))
+        bot.send_message(chat_id, build_payment_message(), parse_mode='Markdown', reply_markup=markup)
+        return
+
+    # ====== PRICE QUESTION ======
+    if is_price_question(text):
+        resp = smart_choice(PRICE_VARIATIONS, user_id, 'precio')
+        markup = types.InlineKeyboardMarkup()
+        markup.add(
+            types.InlineKeyboardButton('📋 Catálogo', callback_data='catalog'),
+            types.InlineKeyboardButton('🛒 Tienda', url=STORE_URL),
+        )
+        bot.send_message(chat_id, resp, parse_mode='Markdown', reply_markup=markup, disable_web_page_preview=True)
+        return
+
+    # ====== DEMO REQUEST ======
+    if is_demo_request(text):
+        msg = smart_choice(DEMO_VARIATIONS, user_id, 'demo')
+        bot.send_message(chat_id, msg, parse_mode='Markdown', reply_markup=get_demo_inline_keyboard())
+        return
+
+    # ====== CONTACT REQUEST ======
+    if is_contact_request(text):
+        bot.send_message(chat_id, "Claro, aquí tienes los datos 👇", parse_mode='Markdown')
+        simulate_typing(chat_id, 0.5)
+        markup = types.InlineKeyboardMarkup()
+        markup.add(
+            types.InlineKeyboardButton('💬 WhatsApp', url=f'https://wa.me/{WHATSAPP_CONTACT}'),
+            types.InlineKeyboardButton('🛒 Tienda', url=STORE_URL),
+        )
+        bot.send_message(
+            chat_id, build_contact_message(),
+            parse_mode='Markdown', reply_markup=markup,
+            disable_web_page_preview=True
+        )
+        return
+
+    # ====== STORE REQUEST ======
+    if is_store_request(text):
+        bot.send_message(chat_id, "¡Claro! Aquí tienes nuestra tienda 🛒", parse_mode='Markdown')
+        simulate_typing(chat_id, 0.5)
+        bot.send_message(
+            chat_id, build_store_message(),
+            parse_mode='Markdown', reply_markup=get_store_inline_keyboard(),
+            disable_web_page_preview=True
+        )
+        return
+
+    # ====== BUSINESS DETECTION + SALES PITCH ======
+    app, tipo_negocio = recommend_app_for_business(text)
+    if app:
+        log_venta_lead(username, user_id, app['nombre'], text, 'descubrimiento')
+        set_state(user_id, 'presentacion', app_interes=app['id'])
+
+        # Select pitch variation (cycle through 3)
+        pitch_count = get_pitch_count(user_id, app['id'])
+        pitches = SALES_PITCHES.get(app['id'], [])
+        if pitches:
+            pitch = pitches[pitch_count % len(pitches)]
+            mark_pitch_seen(user_id, app['id'])
+        else:
+            pitch = build_app_detail_message(app)
+
+        # Context-aware intro
+        if is_greeting(text) or 'tengo' in text_lower or 'mi negocio' in text_lower:
+            intro = f"¡Qué bueno! Un negocio de *{tipo_negocio}*... 😊 Déjame mostrarte algo que te va a encantar:\n\n"
+        else:
+            intro = ""
+
+        bot.send_message(chat_id, intro + pitch, parse_mode='Markdown')
+
+        simulate_typing(chat_id, 1.0)
+        bot.send_message(
+            chat_id, build_app_detail_message(app),
+            parse_mode='Markdown',
+            reply_markup=get_app_detail_keyboard(app),
+            disable_web_page_preview=True
+        )
+
+        # Send follow-up selling in background
+        send_selling_follow_up(chat_id, app)
+        return
+
+    # ====== APP BY KEYWORDS ======
+    app = find_app_by_keywords(text)
+    if app:
+        set_state(user_id, 'presentacion', app_interes=app['id'])
+        log_venta_lead(username, user_id, app['nombre'], text, 'interes')
+
+        bot.send_message(
+            chat_id,
+            f"¡Creo que te refieres a *{app['icono']} {app['nombre']}*! 🎯 Déjame mostrarte:",
+            parse_mode='Markdown'
+        )
+        simulate_typing(chat_id, 1.0)
+        bot.send_message(
+            chat_id, build_app_detail_message(app),
+            parse_mode='Markdown',
+            reply_markup=get_app_detail_keyboard(app),
+            disable_web_page_preview=True
+        )
+
+        send_selling_follow_up(chat_id, app)
+        return
+
+    # ====== PHASE 1: GREETING → Discovery ======
+    if is_greeting(text) and len(text) < 40:
+        state = get_state(user_id)
+        if flow in ('nuevo', 'descubrimiento'):
+            # First interaction: greet warmly, ask about business
+            greeting = get_greeting(user_id)
+            bot.send_message(chat_id, greeting, parse_mode='Markdown')
+
+            simulate_typing(chat_id, random.uniform(1.0, 2.0))
+            pregunta = smart_choice(PREGUNTAS_NEGOCIO, user_id, 'negocio')
+            bot.send_message(
+                chat_id,
+                pregunta + "\n\n🛒 *O visita nuestra tienda:* [A2K Digital Studio]({store})".format(store=STORE_URL),
+                parse_mode='Markdown',
+                reply_markup=get_main_menu_keyboard(),
+                disable_web_page_preview=True
+            )
+            set_state(user_id, 'descubrimiento')
+        else:
+            # Returning to conversation after seeing content
+            greeting = get_greeting(user_id)
+            bot.send_message(
+                chat_id,
+                greeting + "\n\n¿Quieres seguir viendo algo o te ayudo con otra cosa?\n\n"
+                "🛒 *Tienda:* [A2K Digital Studio]({store})".format(store=STORE_URL),
+                parse_mode='Markdown',
+                disable_web_page_preview=True
+            )
+        return
+
+    # ====== BUSINESS FOLLOWUP (when in discovery state) ======
+    if flow == 'descubrimiento' and interaction_count >= 2:
+        # User has been asked about business but hasn't specified
+        # Try to be more helpful
+        app, tipo_negocio = recommend_app_for_business(text)
+        if app:
+            # Already handled above
+            pass
+        else:
+            # Ask followup business question
+            followup = smart_choice(PREGUNTAS_NEGOCIO_FOLLOWUP, user_id, 'negocio_followup')
+            bot.send_message(
+                chat_id,
+                followup + "\n\nO si prefieres, puedes ver todo lo que tenemos:\n\n"
+                "🛒 *Tienda:* [A2K Digital Studio]({store})".format(store=STORE_URL),
+                parse_mode='Markdown',
+                disable_web_page_preview=True
+            )
+            return
+
+    # ====== UNKNOWN MESSAGE ======
+    resp = smart_choice(UNKNOWN_VARIATIONS, user_id, 'unknown')
+    bot.send_message(chat_id, resp, parse_mode='Markdown', disable_web_page_preview=True)
+
+    # Show helpful options
+    simulate_typing(chat_id, 1.0)
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        types.InlineKeyboardButton('📋 Catálogo A2K', callback_data='catalog'),
+        types.InlineKeyboardButton('🛒 Tienda Online', url=STORE_URL),
+    )
+    markup.add(types.InlineKeyboardButton('💰 Precios', callback_data='precios'))
+    bot.send_message(chat_id, "👇 ¿Qué te gustaría hacer?", reply_markup=markup)
 
 
 # ==================== ERROR HANDLER ====================
 
-@bot.message_handler(func=lambda message: True, content_types=['photo', 'video', 'audio', 'document', 'sticker', 'voice'])
+@bot.message_handler(func=lambda message: True, content_types=['photo', 'document', 'sticker', 'voice', 'video'])
 def handle_non_text(message):
-    """Maneja mensajes que no son texto."""
     chat_id = message.chat.id
-    user_id = message.from_user.id
-    track_interaction(user_id)
+    simulate_typing(chat_id, 1.0)
+    bot.send_message(
+        chat_id,
+        "Jaja, gracias por enviar eso 😄 Pero soy mejor con texto. Cuéntame, "
+        "¿tienes un negocio? Dime el tipo y te asesoro gratis 💪\n\n"
+        "🛒 *Tienda:* [A2K Digital Studio]({store})".format(store=STORE_URL),
+        parse_mode='Markdown',
+        disable_web_page_preview=True
+    )
 
-    logger.info(f"NO_TEXTO - @{message.from_user.username or 'unknown'}: tipo={message.content_type}")
+
+# ==================== CROSS-SELL HELPER ====================
+
+def get_cross_sell_message(user_id, current_app_id):
+    """Genera un mensaje de cross-selling para una app relacionada."""
+    related_ids = APPS_CROSS_SELL.get(current_app_id, [])
+    if not related_ids:
+        return None
+    related_app = next((a for a in A2K_APPS if a['id'] == random.choice(related_ids)), None)
+    if not related_app:
+        return None
+    msg_template = random.choice(CROSS_SELL_MESSAGES)
+    return msg_template.format(nombre=related_app['nombre'], icono=related_app['icono'])
+
+# ==================== STATE TRANSITION HELPERS ====================
+
+def transition_to_discovery(user_id, chat_id):
+    """Transición al estado de descubrimiento con pregunta de negocio."""
+    pregunta = smart_choice(PREGUNTAS_NEGOCIO, user_id, 'negocio')
+    bot.send_message(
+        chat_id,
+        pregunta + "\n\n🛒 *O visita nuestra tienda:* [A2K Digital Studio]({store})".format(store=STORE_URL),
+        parse_mode='Markdown',
+        reply_markup=get_main_menu_keyboard(),
+        disable_web_page_preview=True
+    )
+    set_state(user_id, 'descubrimiento')
+
+def transition_to_pitch(user_id, chat_id, app, tipo_negocio=None):
+    """Transición al estado de presentación con pitch de venta."""
+    username = 'user'
+    log_venta_lead(username, user_id, app['nombre'], 'auto_pitch', 'presentacion')
+    set_state(user_id, 'presentacion', app_interes=app['id'])
+
+    pitches = SALES_PITCHES.get(app['id'], [])
+    pitch_count = get_pitch_count(user_id, app['id'])
+    if pitches:
+        pitch = pitches[pitch_count % len(pitches)]
+        mark_pitch_seen(user_id, app['id'])
+    else:
+        pitch = build_app_detail_message(app)
+
+    intro = ""
+    if tipo_negocio:
+        intro = f"¡Qué bueno! Un negocio de *{tipo_negocio}*... 😊 Déjame mostrarte algo que te va a encantar:\n\n"
+
+    bot.send_message(chat_id, intro + pitch, parse_mode='Markdown')
 
     simulate_typing(chat_id, 1.0)
+    bot.send_message(
+        chat_id, build_app_detail_message(app),
+        parse_mode='Markdown',
+        reply_markup=get_app_detail_keyboard(app),
+        disable_web_page_preview=True
+    )
 
-    responses = [
-        "Jeje, me encanta que me mandes eso 😄 pero soy un bot de texto por ahora. "
-        "Dime, ¿qué necesitas? ¿Quieres ver el catálogo, precios, o alguna app en particular? 💡",
-        "¡Bueno! Por ahora solo puedo procesar texto, pero no te preocupes 🤓. "
-        "Pregúntame lo que quieras sobre nuestras aplicaciones A2K y con gusto te ayudo.",
-        "Mm, no puedo procesar eso todavía 😅 Pero cuéntame, ¿buscas alguna app en específico? "
-        "Tengo sistemas para barberías, ferreterías, bodegas y más 🛒",
-    ]
+    send_selling_follow_up(chat_id, app)
 
-    bot.send_message(chat_id, random.choice(responses), parse_mode='Markdown',
-                     reply_markup=get_main_menu_keyboard())
+def transition_to_closing(user_id, chat_id, app=None):
+    """Transición al estado de cierre de venta."""
+    cierre = smart_choice(CIERRES, user_id, 'cierre')
+    bot.send_message(chat_id, cierre, parse_mode='Markdown')
 
+    simulate_typing(chat_id, 0.5)
+    bot.send_message(
+        chat_id, "👇 Elige tu opción:",
+        reply_markup=get_purchase_inline_keyboard(app)
+    )
+    set_state(user_id, 'cierre', app_interes=app['id'] if app else None)
 
-def error_handler(exception):
-    """Manejo global de errores."""
-    logger.error(f"Error: {exception}", exc_info=True)
+def handle_objection_with_followup(user_id, chat_id, objection_category, state):
+    """Maneja una objeción y ofrece seguimiento."""
+    responses = OBJECIONES[objection_category]['respuestas']
+    resp = smart_choice(responses, user_id, f'objecion_{objection_category}')
 
+    bot.send_message(chat_id, resp, parse_mode='Markdown')
 
-bot.register_error_handler(error_handler)
+    simulate_typing(chat_id, 0.5)
+    app_interes = state.get('app_interes')
+    app = next((a for a in A2K_APPS if a['id'] == app_interes), None) if app_interes else None
 
-# ==================== INICIO ====================
+    markup = types.InlineKeyboardMarkup()
+    if app:
+        markup.add(
+            types.InlineKeyboardButton('🎬 Ver Demo', url=get_whatsapp_demo_url(app['nombre'])),
+            types.InlineKeyboardButton('🛒 Tienda', url=STORE_URL),
+        )
+    else:
+        markup.add(
+            types.InlineKeyboardButton('🎬 Demo', callback_data='demo_general'),
+            types.InlineKeyboardButton('🛒 Tienda', url=STORE_URL),
+        )
+    markup.add(types.InlineKeyboardButton('📋 Catálogo', callback_data='catalog'))
+    bot.send_message(chat_id, "👇 ¿Qué prefieres?", reply_markup=markup)
+
+# ==================== BOT START ====================
 
 if __name__ == '__main__':
-    print("=" * 60)
-    print("  ✨ A2K DIGITAL STUDIO - BOT TELEGRAM v4.0 ✨")
-    print("  Asistente de Ventas Profesional (Enhanced)")
-    print("=" * 60)
-    print(f"  📱 Apps en catálogo: {len(A2K_APPS)}")
-    print(f"  💰 Precio estándar: $25 USD")
-    print(f"  🛒 Tienda: {STORE_URL}")
-    print(f"  💬 WhatsApp: +{WHATSAPP_CONTACT}")
-    print(f"  🏦 Bancos Nacionales: {len(BANCOS_NAC)}")
-    print(f"  🏦 Bancos Internacionales: {len(BANCOS_INT)}")
-    print(f"  🇪🇸 Amazon España: {sum(len(v) for v in AMAZON_ES.values())} productos")
-    print(f"  🇺🇸 Amazon USA: {sum(len(v) for v in AMAZON_USA.values())} productos")
-    print(f"  🇨🇳 AliExpress: {len(ALIEXPRESS)} productos")
-    print(f"  📊 Seguimiento de ventas: {VENTAS_FILE}")
-    print(f"  🧠 Motor de recomendación: ACTIVO")
-    print(f"  📈 Follow-ups de venta: ACTIVO")
-    print(f"  🎯 Detección de negocios: ACTIVA")
-    print("=" * 60)
-    print(f"  ⏰ Iniciado: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print("  🟢 Estado: ACTIVO - Esperando mensajes...")
-    print("=" * 60)
-
+    logger.info("=" * 50)
+    logger.info("A2K Digital Studio - Telegram Bot v5.0")
+    logger.info("Asistente de Ventas - Marketing Expert")
+    logger.info("=" * 50)
+    print("=" * 50)
+    print("A2K Digital Studio - Telegram Bot v5.0")
+    print("Marketing Expert - Conversational Sales Bot")
+    print("=" * 50)
     try:
-        bot.infinity_polling(
-            timeout=60,
-            long_polling_timeout=60,
-            none_stop=True
-        )
-    except KeyboardInterrupt:
-        print("\n  ⏹️  Bot detenido manualmente.")
-        print("=" * 60)
+        bot.infinity_polling(timeout=60, long_polling_timeout=60)
     except Exception as e:
-        logger.critical(f"Error crítico: {e}", exc_info=True)
-        print(f"\n  ❌ Error crítico: {e}")
-        print("=" * 60)
+        logger.error(f"Error en infinity_polling: {e}")
+        time.sleep(5)
+        bot.infinity_polling(timeout=60, long_polling_timeout=60)
