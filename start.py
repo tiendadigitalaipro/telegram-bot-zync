@@ -8,6 +8,7 @@ Flask server to keep Render web service alive + bot runner
 import os
 import threading
 import logging
+import runpy
 from flask import Flask, jsonify
 
 # Configure logging
@@ -21,7 +22,6 @@ app = Flask(__name__)
 
 @app.route('/')
 def health_check():
-    """Health check endpoint for Render and UptimeRobot"""
     return jsonify({
         "status": "ok",
         "service": "A2K Digital Studio - Telegram Bot",
@@ -30,38 +30,25 @@ def health_check():
 
 @app.route('/health')
 def health():
-    """Additional health endpoint"""
     return jsonify({"status": "healthy"}), 200
 
 @app.route('/ping')
 def ping():
-    """Simple ping endpoint"""
     return "pong", 200
 
 def run_bot():
-    """Import and run the Telegram bot in a separate thread"""
     try:
-        # AQUÍ ESTÁ LA MAGIA: Cargamos el archivo con guiones medios
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("telegram_bot", "telegram-bot-zync-v2.py")
-        telegram_bot_zync_v2 = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(telegram_bot_zync_v2)
-        
         logger.info("Starting Telegram bot...")
-        telegram_bot_zync_v2.bot.infinity_polling(
-            timeout=60,
-            long_polling_timeout=60
-        )
+        # Ejecuta el archivo del bot tal cual, como si lo llamaras desde la terminal
+        runpy.run_path("telegram-bot-zync-v2.py", run_name="__main__")
     except Exception as e:
         logger.error(f"Bot error: {e}")
 
 if __name__ == '__main__':
-    # Start bot in background thread
     bot_thread = threading.Thread(target=run_bot, daemon=True)
     bot_thread.start()
     logger.info("Bot thread started")
 
-    # Run Flask app (this blocks - Render expects this)
     port = int(os.environ.get('PORT', 10000))
     logger.info(f"Starting Flask server on port {port}")
     app.run(host='0.0.0.0', port=port, debug=False)
