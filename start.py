@@ -41,7 +41,12 @@ def ping():
 def run_bot():
     """Import and run the Telegram bot in a separate thread"""
     try:
-        import telegram_bot_zync_v2
+        # AQUÍ ESTÁ LA MAGIA: Cargamos el archivo con guiones medios
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("telegram_bot", "telegram-bot-zync-v2.py")
+        telegram_bot_zync_v2 = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(telegram_bot_zync_v2)
+        
         logger.info("Starting Telegram bot...")
         telegram_bot_zync_v2.bot.infinity_polling(
             timeout=60,
