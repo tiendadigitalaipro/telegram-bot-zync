@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Configuración
+# Configuración (Busca BOT_TOKEN que es como está en Render)
 TELEGRAM_TOKEN = os.environ.get('BOT_TOKEN')
 DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY')
 
@@ -75,10 +75,9 @@ def ask_deepseek(chat_id, user_text):
         res = requests.post("https://api.deepseek.com/v1/chat/completions", json=payload, headers=headers, timeout=45)
         if res.status_code == 200:
             answer = res.json()['choices'][0]['message']['content'].strip()
-            # Guardar memoria
             history.append({"role": "user", "content": user_text})
             history.append({"role": "assistant", "content": answer})
-            conversations[chat_id] = history[-16:] # Guardar últimos 16
+            conversations[chat_id] = history[-16:]
             return answer
         return "😓 Tuve un problemita técnico. ¿Podrías repetirme tu mensaje, por favor? 🙏"
     except Exception as e:
@@ -95,13 +94,8 @@ def handle_text(message):
     chat_id = message.chat.id
     text = message.text.strip()
     
-    # Mostrar "escribiendo..."
     bot.send_chat_action(chat_id, 'typing')
-    
-    # Preguntar a DeepSeek
     answer = ask_deepseek(chat_id, text)
-    
-    # Responder
     bot.reply_to(message, answer, parse_mode='Markdown')
 
 @bot.message_handler(content_types=['voice', 'audio'])
@@ -113,7 +107,5 @@ def run_bot():
     bot.infinity_polling(timeout=60, long_polling_timeout=60)
 
 if __name__ == '__main__':
-    # Iniciar el bot en un hilo
     threading.Thread(target=run_bot, daemon=True).start()
-    # Iniciar Flask para Render
     run_web()
