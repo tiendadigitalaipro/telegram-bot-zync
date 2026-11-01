@@ -3,7 +3,7 @@
 """
 A2K Digital Studio - Telegram Bot Start Script (Vendedor ZYNC)
 Flask server to keep Render web service alive + bot runner with DeepSeek
-v5: registro de mensajes de clientes (/mensajes) + bot auto-reparable
+v5.1: registro de mensajes + ids con hora (fix lector de voz del laptop)
 """
 
 import os
@@ -128,9 +128,14 @@ def handle_text(message):
 
     # Registrar la pregunta del cliente (para el altavoz del laptop)
     if not text.startswith('/'):
-        msg_counter[0] += 1
+        # v5.1: id con hora en milisegundos — aunque Render se reinicie el id
+        # nuevo siempre es mas grande, asi el lector de voz nunca pierde mensajes
+        nuevo_id = int(time.time() * 1000)
+        if nuevo_id <= msg_counter[0]:
+            nuevo_id = msg_counter[0] + 1
+        msg_counter[0] = nuevo_id
         clientes_mensajes.append({
-            "id": msg_counter[0],
+            "id": nuevo_id,
             "usuario": (message.from_user.first_name or "Cliente")[:30],
             "texto": text[:500],
             "hora": datetime.now().strftime('%H:%M:%S')
