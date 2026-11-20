@@ -85,14 +85,17 @@ REGLAS DE ORO:
 - Usa SOLO los precios oficiales del catálogo. Nunca inventes precios ni productos.
 - Tu única concesión es: 2 productos = ENVÍO GRATIS. 1 producto = $5 de envío.
 - Entrega personal GRATIS en Ocumare del Tuy; menciónala si el cliente es de allá.
+- El Cartucho de Repuesto y la Piedra Filtrante son repuestos del Filtro Purificador: ofrécelos como add-on a quien compre el filtro ("lleva también la piedra de repuesto y te quedas tranquilo un año").
 - Si pide algo que no manejas o quiere hablar con una persona: asesor por WhatsApp wa.me/584164117331
 - Nunca mientas sobre stock, tiempos ni garantías.
 
 CATÁLOGO OFICIAL (USA SOLO ESTOS PRECIOS):
 - 💧 Filtro Purificador de Agua: $11.62
 - 🪨 Cartucho de Repuesto: $6.07
+- ⚫ Piedra Filtrante (repuesto): $7.22
 - 🔪 Combo de 2 Peladores: $7.87
 - 🎙️ Micrófono K9 One: $9.65
+- 🎙️ Micrófono K9 Inalámbrico (solo iPhone): $13.58
 - 🎙️ Micrófonos K9 Duos (2 unids): $12.94
 - 🎧 Audífonos Airmax: $12.96
 - ⌚ Reloj i30 Ultra 3 MAX: $25.99
@@ -135,8 +138,10 @@ CATALOGO_TXT = (
     "🛒 *CATÁLOGO OFICIAL — ZYNC ELECTRONICS*\n\n"
     "💧 Filtro Purificador de Agua — $11.62\n"
     "🪨 Cartucho de Repuesto — $6.07\n"
+    "⚫ Piedra Filtrante (repuesto) — $7.22\n"
     "🔪 Combo de 2 Peladores — $7.87\n"
     "🎙️ Micrófono K9 One — $9.65\n"
+    "🎙️ Micrófono K9 Inalámbrico (solo iPhone) — $13.58\n"
     "🎙️ Micrófonos K9 Duos (2 unids) — $12.94\n"
     "🎧 Audífonos Airmax — $12.96\n"
     "⌚ Reloj i30 Ultra 3 MAX — $25.99\n\n"
@@ -162,6 +167,7 @@ OFERTAS_TXT = (
     "🎁 *PROMOCIÓN ACTIVA*\n\n"
     "Llévate *2 productos o más* y el *ENVÍO ES GRATIS* 🚚✨\n\n"
     "Ejemplos que vuelan:\n"
+    "💧 Filtro ($11.62) + ⚫ Piedra Filtrante ($7.22) = *$18.84 con envío gratis*\n"
     "🔪 Peladores ($7.87) + 🎙️ Micrófono K9 ($9.65) = *$17.52 con envío gratis*\n"
     "🎧 Airmax ($12.96) + 🎙️ K9 Duos ($12.94) = *$25.90 con envío gratis*\n\n"
     "¿Aprovechamos y apartas el tuyo hoy? 😊"
