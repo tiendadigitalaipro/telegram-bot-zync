@@ -96,7 +96,6 @@ CATÁLOGO OFICIAL (USA SOLO ESTOS PRECIOS):
 - ⚫ Piedra Filtrante (repuesto): $7.22
 - 🔪 Combo de 2 Peladores: $7.87
 - 🎙️ Micrófono K9 One: $9.65
-- 🎙️ Micrófono K9 Inalámbrico (solo iPhone): $13.58
 - 🎙️ Micrófonos K9 Duos (2 unids): $12.94
 - 🎧 Audífonos Airmax: $12.96
 - ⌚ Reloj i30 Ultra 3 MAX: $25.99
@@ -142,7 +141,6 @@ CATALOGO_TXT = (
     "⚫ Piedra Filtrante (repuesto) — $7.22\n"
     "🔪 Combo de 2 Peladores — $7.87\n"
     "🎙️ Micrófono K9 One — $9.65\n"
-    "🎙️ Micrófono K9 Inalámbrico (solo iPhone) — $13.58\n"
     "🎙️ Micrófonos K9 Duos (2 unids) — $12.94\n"
     "🎧 Audífonos Airmax — $12.96\n"
     "⌚ Reloj i30 Ultra 3 MAX — $25.99\n\n"
