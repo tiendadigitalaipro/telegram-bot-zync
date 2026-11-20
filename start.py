@@ -186,10 +186,15 @@ def send_welcome(message):
         nombre = f" {message.from_user.first_name}"
     bot.reply_to(
         message,
-        f"¡Hola{nombre}! 👋 Bienvenido a *ZYNC Electronics*, tu tienda de tecnología de confianza. 🛒\n\n"
-        "Tenemos audífonos, micrófonos, relojes y más — todo importado y con calidad garantizada.\n\n"
-        "🎁 *Recuerda:* lleva *2 productos* y el *envío es GRATIS*\n\n"
-        "¿Qué andas buscando hoy? Así te muestro lo que mejor te queda 😊",
+        f"🚀 *¡Bienvenido a ZYNC Electronics{nombre}!*\n\n"
+        "La tienda que trae la tecnología de USA y China directo a tu puerta en Venezuela 🇻🇪🛒\n\n"
+        "🎧 Audífonos profesionales\n"
+        "🎙️ Micrófonos para creadores\n"
+        "⌚ Smartwatches y más\n\n"
+        "*Todo original, con garantía y al mejor precio del mercado.*\n\n"
+        "🎁 *HOY:* lleva *2 productos* y el *ENVÍO ES GRATIS*\n\n"
+        "Dime: ¿qué estás buscando? Te lo consigo hoy mismo 😎\n\n"
+        "_Tip: escribe /catalogo para ver todo con precios_",
         parse_mode='Markdown'
     )
 
