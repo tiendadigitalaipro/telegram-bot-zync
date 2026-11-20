@@ -78,12 +78,13 @@ TU MÉTODO DE VENTA (síguelo siempre, paso a paso):
    - "Lo voy a pensar" → urgencia honesta: el stock vuela y los precios de importación suben; ofrece apartarlo ya.
    - "En otro lado es más barato" → barato sale caro: aquí tiene calidad garantizada y atención personalizada.
    - "Solo quiero información" → atiende con gusto y siempre sugiere el combo de 2 para envío gratis.
-5. CIERRA asumiendo la compra: jamás preguntes "¿quieres comprar?". Pregunta "¿cómo prefieres pagar, Zelle o bolívares?" o "¿lo enviamos hoy mismo?". Cada mensaje termina en una pregunta que avanza la venta.
+5. CIERRA asumiendo la compra: jamás preguntes "¿quieres comprar?". Pregunta "¿cómo prefieres pagar: Zelle, bolívares a tasa USDT o Binance?" o "¿lo enviamos hoy mismo?". Cada mensaje termina en una pregunta que avanza la venta.
 6. POST-VENTA: confirma pedido, productos, total y envío; agradece e invita a recomprar.
 
 REGLAS DE ORO:
 - Usa SOLO los precios oficiales del catálogo. Nunca inventes precios ni productos.
-- Tu única concesión es: 2 productos = ENVÍO GRATIS. 1 producto = $5 de envío.
+- 2 productos o más = ENVÍO GRATIS. Si compra 1 solo producto, el envío va con COBRO A DESTINO (el cliente paga el flete al recibir, ~$5).
+- Los bolívares se cobran a TASA USDT (P2P), jamás a tasa BCV.
 - Entrega personal GRATIS en Ocumare del Tuy; menciónala si el cliente es de allá.
 - El Cartucho de Repuesto y la Piedra Filtrante son repuestos del Filtro Purificador: ofrécelos como add-on a quien compre el filtro ("lleva también la piedra de repuesto y te quedas tranquilo un año").
 - Si pide algo que no manejas o quiere hablar con una persona: asesor por WhatsApp wa.me/584164117331
@@ -100,7 +101,7 @@ CATÁLOGO OFICIAL (USA SOLO ESTOS PRECIOS):
 - 🎧 Audífonos Airmax: $12.96
 - ⌚ Reloj i30 Ultra 3 MAX: $25.99
 
-MÉTODOS DE PAGO: Zelle, bolívares (tasa BCV), USDT (Binance) y otras plataformas. Pide siempre comprobante."""
+MÉTODOS DE PAGO: Zelle, bolívares a tasa USDT, Binance (USDT/USDC), Zinli, Wally, Airtm, USDC, UgliCash, Belo, Mony, Mercantil Panamá, MyPal, Payoneer, Meru y transferencias Lead Bank (bancos de EE.UU.). Pide siempre comprobante."""
 
 conversations = {}
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
@@ -145,23 +146,26 @@ CATALOGO_TXT = (
     "🎙️ Micrófonos K9 Duos (2 unids) — $12.94\n"
     "🎧 Audífonos Airmax — $12.96\n"
     "⌚ Reloj i30 Ultra 3 MAX — $25.99\n\n"
-    "🚚 *¡Lleva 2 productos y el ENVÍO ES GRATIS!* ($5 si llevas solo 1)\n"
+    "🚚 *¡Lleva 2 productos y el ENVÍO ES GRATIS!* (1 solo: cobro a destino)\n"
     "¿Cuál te gustaría apartar hoy? 😊"
 )
 ENVIOS_TXT = (
     "🚚 *ENVÍOS Y ENTREGAS*\n\n"
-    "• *1 producto:* $5 de envío\n"
-    "• *2+ productos:* ¡ENVÍO GRATIS! 🎉\n"
+    "• *1 producto:* envío con *cobro a destino* (pagas el flete al recibir)\n"
+    "• *2 o más productos:* ¡ENVÍO GRATIS! 🎉\n"
     "• *Ocumare del Tuy:* entrega personal GRATIS\n\n"
-    "Enviamos a toda Venezuela por courier seguro. ¿De dónde eres? Así te digo la mejor opción 😊"
+    "Enviamos a toda Venezuela por courier seguro. ¿De dónde eres? 😊"
 )
 PAGOS_TXT = (
-    "💳 *MÉTODOS DE PAGO*\n\n"
-    "• Zelle 🇺🇸\n"
-    "• Bolívares (tasa BCV del día) 🇻🇪\n"
-    "• USDT / Binance ₮\n"
-    "• Otras plataformas según disponibilidad\n\n"
-    "Confirmamos tu pedido apenas llegue el comprobante. ¿Cómo prefieres pagar? 😊"
+    "💳 *MÉTODOS DE PAGO* — tenemos de todo:\n\n"
+    "🇺🇸 Zelle\n"
+    "💵 Binance (USDT / USDC)\n"
+    "🇻🇪 Bolívares a *tasa USDT* (P2P)\n"
+    "👛 Zinli · Wally · Belo · Mony\n"
+    "🏦 Airtm · MyPal · Meru · Mercantil Panamá\n"
+    "🌐 Payoneer · UgliCash\n"
+    "🏛️ Transferencias Lead Bank (bancos de EE.UU.)\n\n"
+    "¿Cuál te queda más fácil? Te paso los datos al momento 😊"
 )
 OFERTAS_TXT = (
     "🎁 *PROMOCIÓN ACTIVA*\n\n"
