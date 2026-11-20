@@ -67,10 +67,26 @@ def run_web():
     app.run(host='0.0.0.0', port=port, debug=False)
 
 # --- CEREBRO DE DEEPSEEK (El mismo de WhatsApp) ---
-SYSTEM_PROMPT = """Eres el vendedor estrella de ZYNC Electronics. Atiendes por Telegram.
-- Amable, cercano y entusiasta. Usa emojis (1 a 3 por mensaje).
-- Respuestas cortas (máximo 120 palabras).
-- Regla de oro: Si el cliente dice que está caro, ofrécele llevar 2 productos para que el ENVÍO sea GRATIS. No bajes los precios.
+SYSTEM_PROMPT = """Eres "Kairo", el vendedor estrella senior de ZYNC Electronics en Telegram. Eres un profesional de ventas consultivo: educado, cercano, persuasivo y siempre honesto. Hablas español venezolano natural. Usas 1 a 3 emojis por mensaje y máximo 120 palabras.
+
+TU MÉTODO DE VENTA (síguelo siempre, paso a paso):
+1. ABRE la venta: saluda con calidez y haz UNA pregunta abierta para descubrir la necesidad ("¿qué andas buscando hoy?", "¿para quién es el regalo?").
+2. DESCUBRE: pregunta para qué lo necesita o qué le gustaría lograr. Escucha ANTES de ofrecer.
+3. PRESENTA beneficios, no características: conecta cada producto con lo que el cliente dijo ("para tus videos este micrófono te queda perfecto porque se escucha profesional").
+4. CONVENCE con manejo de objeciones:
+   - "Está caro" → NUNCA bajes el precio. Responde con valor: calidad importada, garantía y el ahorro real del ENVÍO GRATIS llevando 2 productos.
+   - "Lo voy a pensar" → urgencia honesta: el stock vuela y los precios de importación suben; ofrece apartarlo ya.
+   - "En otro lado es más barato" → barato sale caro: aquí tiene calidad garantizada y atención personalizada.
+   - "Solo quiero información" → atiende con gusto y siempre sugiere el combo de 2 para envío gratis.
+5. CIERRA asumiendo la compra: jamás preguntes "¿quieres comprar?". Pregunta "¿cómo prefieres pagar, Zelle o bolívares?" o "¿lo enviamos hoy mismo?". Cada mensaje termina en una pregunta que avanza la venta.
+6. POST-VENTA: confirma pedido, productos, total y envío; agradece e invita a recomprar.
+
+REGLAS DE ORO:
+- Usa SOLO los precios oficiales del catálogo. Nunca inventes precios ni productos.
+- Tu única concesión es: 2 productos = ENVÍO GRATIS. 1 producto = $5 de envío.
+- Entrega personal GRATIS en Ocumare del Tuy; menciónala si el cliente es de allá.
+- Si pide algo que no manejas o quiere hablar con una persona: asesor por WhatsApp wa.me/584164117331
+- Nunca mientas sobre stock, tiempos ni garantías.
 
 CATÁLOGO OFICIAL (USA SOLO ESTOS PRECIOS):
 - 💧 Filtro Purificador de Agua: $11.62
@@ -81,9 +97,7 @@ CATÁLOGO OFICIAL (USA SOLO ESTOS PRECIOS):
 - 🎧 Audífonos Airmax: $12.96
 - ⌚ Reloj i30 Ultra 3 MAX: $25.99
 
-REGLAS DE ENVÍO Y ENTREGA:
-1. El ENVÍO ES GRATIS solo a partir de 2 productos. Si compra 1 solo, cobra $5 de envío.
-2. Hacemos ENTREGAS PERSONALES en Ocumare del Tuy. Si el cliente es de ahí, ofrécele entrega personal."""
+MÉTODOS DE PAGO: Zelle, bolívares (tasa BCV), USDT (Binance) y otras plataformas. Pide siempre comprobante."""
 
 conversations = {}
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
@@ -117,9 +131,85 @@ def ask_deepseek(chat_id, user_text):
         return "😓 Tuve un problemita técnico. ¿Podrías repetirme tu mensaje, por favor? 🙏"
 
 # --- MANEJADORES DE MENSAJES ---
+CATALOGO_TXT = (
+    "🛒 *CATÁLOGO OFICIAL — ZYNC ELECTRONICS*\n\n"
+    "💧 Filtro Purificador de Agua — $11.62\n"
+    "🪨 Cartucho de Repuesto — $6.07\n"
+    "🔪 Combo de 2 Peladores — $7.87\n"
+    "🎙️ Micrófono K9 One — $9.65\n"
+    "🎙️ Micrófonos K9 Duos (2 unids) — $12.94\n"
+    "🎧 Audífonos Airmax — $12.96\n"
+    "⌚ Reloj i30 Ultra 3 MAX — $25.99\n\n"
+    "🚚 *¡Lleva 2 productos y el ENVÍO ES GRATIS!* ($5 si llevas solo 1)\n"
+    "¿Cuál te gustaría apartar hoy? 😊"
+)
+ENVIOS_TXT = (
+    "🚚 *ENVÍOS Y ENTREGAS*\n\n"
+    "• *1 producto:* $5 de envío\n"
+    "• *2+ productos:* ¡ENVÍO GRATIS! 🎉\n"
+    "• *Ocumare del Tuy:* entrega personal GRATIS\n\n"
+    "Enviamos a toda Venezuela por courier seguro. ¿De dónde eres? Así te digo la mejor opción 😊"
+)
+PAGOS_TXT = (
+    "💳 *MÉTODOS DE PAGO*\n\n"
+    "• Zelle 🇺🇸\n"
+    "• Bolívares (tasa BCV del día) 🇻🇪\n"
+    "• USDT / Binance ₮\n"
+    "• Otras plataformas según disponibilidad\n\n"
+    "Confirmamos tu pedido apenas llegue el comprobante. ¿Cómo prefieres pagar? 😊"
+)
+OFERTAS_TXT = (
+    "🎁 *PROMOCIÓN ACTIVA*\n\n"
+    "Llévate *2 productos o más* y el *ENVÍO ES GRATIS* 🚚✨\n\n"
+    "Ejemplos que vuelan:\n"
+    "🔪 Peladores ($7.87) + 🎙️ Micrófono K9 ($9.65) = *$17.52 con envío gratis*\n"
+    "🎧 Airmax ($12.96) + 🎙️ K9 Duos ($12.94) = *$25.90 con envío gratis*\n\n"
+    "¿Aprovechamos y apartas el tuyo hoy? 😊"
+)
+CONTACTO_TXT = (
+    "👤 *ASESOR EN VIVO*\n\n"
+    "Habla directo con nuestro equipo por WhatsApp:\n"
+    "👉 https://wa.me/584164117331\n\n"
+    "Te atendemos con gusto de inmediato. 🙌"
+)
+
 @bot.message_handler(commands=['start', 'hola'])
 def send_welcome(message):
-    bot.reply_to(message, "¡Hola! 👋 Bienvenido a *ZYNC Electronics*. Soy tu asistente virtual. ¿Qué producto te gustaría llevar hoy? 🛒\n\nRecuerda: *¡Lleva 2 productos y el envío es GRATIS!* 🚚", parse_mode='Markdown')
+    nombre = ""
+    if message.from_user and message.from_user.first_name:
+        nombre = f" {message.from_user.first_name}"
+    bot.reply_to(
+        message,
+        f"¡Hola{nombre}! 👋 Bienvenido a *ZYNC Electronics*, tu tienda de tecnología de confianza. 🛒\n\n"
+        "Tenemos audífonos, micrófonos, relojes y más — todo importado y con calidad garantizada.\n\n"
+        "🎁 *Recuerda:* lleva *2 productos* y el *envío es GRATIS*\n\n"
+        "¿Qué andas buscando hoy? Así te muestro lo que mejor te queda 😊",
+        parse_mode='Markdown'
+    )
+
+@bot.message_handler(commands=['catalogo'])
+def send_catalogo(message):
+    bot.reply_to(message, CATALOGO_TXT, parse_mode='Markdown')
+
+@bot.message_handler(commands=['precios'])
+def send_precios(message):
+    bot.reply_to(message, CATALOGO_TXT, parse_mode='Markdown')
+
+@bot.message_handler(commands=['envios'])
+def send_envios(message):
+    bot.reply_to(message, ENVIOS_TXT, parse_mode='Markdown')
+
+@bot.message_handler(commands=['pagos'])
+def send_pagos(message):
+    bot.reply_to(message, PAGOS_TXT, parse_mode='Markdown')
+
+@bot.message_handler(commands=['ofertas'])
+def send_ofertas(message):
+    bot.reply_to(message, OFERTAS_TXT, parse_mode='Markdown')
+
+@bot.message_handler(commands=['contacto'])
+def send_contacto(message):
+    bot.reply_to(message, CONTACTO_TXT, parse_mode='Markdown')
 
 @bot.message_handler(content_types=['text'])
 def handle_text(message):
